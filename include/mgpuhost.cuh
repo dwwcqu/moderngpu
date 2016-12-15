@@ -557,7 +557,7 @@ template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
 	typename Comp>
 MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
 	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+	KeyType ppKeys_global, ValType ppVals_global, 
 	Comp comp, CudaContext& context);
 
 // Specialization of SetOpPairs with Comp = mgpu::less<T>.
@@ -565,7 +565,7 @@ template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
 	typename ValsIt1, typename ValsIt2, typename KeyType, typename ValType>
 MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
 	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+	KeyType ppKeys_global, ValType ppVals_global, 
 	CudaContext& context);
 
 ////////////////////////////////////////////////////////////////////////////////

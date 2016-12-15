@@ -314,13 +314,17 @@ MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
 
 ////////////////////////////////////////////////////////////////////////////////
 // SetOpPairs
+//
+// Difference from Modern GPU:
+// 1) use KeysType rather than MGPU_MEM(KeyType)*
+// 2) use ValsType rather than MGPU_MEM(ValType)*
 
 template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
 	typename ValsIt1, typename ValsIt2, typename KeyType, typename ValType,
 	typename Comp>
 MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
 	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+	KeyType ppKeys_global, ValType ppVals_global, 
 	Comp comp, CudaContext& context) {
 
 	const int NT = 128;
@@ -365,7 +369,7 @@ template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
 	typename ValsIt1, typename ValsIt2, typename KeyType, typename ValType>
 MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
 	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+	KeyType ppKeys_global, ValType ppVals_global, 
 	CudaContext& context) {
  
 	typedef mgpu::less<typename std::iterator_traits<KeysIt1>::value_type> Comp;
