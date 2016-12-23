@@ -37,6 +37,8 @@
 #include "mgpudevice.cuh"
 #include "util/mgpucontext.h"
 
+#include <matrix.hpp>
+
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -540,7 +542,7 @@ MGPU_HOST int RelationalJoin(InputIt1 a_global, int aCount, InputIt2 b_global,
 // sum of the input arrays. Partials results are computed into this temporary
 // array before being moved into the final array. It consumes more space but
 // results in higher performance.
-template<MgpuSetOp Op, bool Duplicates, typename It1, typename It2,
+/*template<MgpuSetOp Op, bool Duplicates, typename It1, typename It2,
 	typename T, typename Comp>
 MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
 	MGPU_MEM(T)* ppKeys_global, Comp comp, CudaContext& context, 
@@ -549,24 +551,46 @@ MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
 // Specialization of SetOpKeys with Comp = mgpu::less<T>.
 template<MgpuSetOp Op, bool Duplicates, typename It1, typename It2, typename T>
 MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
-	MGPU_MEM(T)* ppKeys_global, CudaContext& context, bool compact = true);
+	MGPU_MEM(T)* ppKeys_global, CudaContext& context, bool compact = true);*/
+
+template<MgpuSetOp Op, bool Duplicates, typename T, typename Comp>
+MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
+	int* ppKeys_global, MGPU_MEM(int)* countsDevice, Comp comp, CudaContext& context );
+
+// Specialization of SetOpKeys with Comp = mgpu::less<T>.
+template<MgpuSetOp Op, bool Duplicates, typename T>
+MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
+	int* ppKeys_global, MGPU_MEM(int)* countsDevice, CudaContext& context);
 
 // SetOpPairs runs multiset operations by key and supports value exchange.
-template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
-	typename ValsIt1, typename ValsIt2, typename KeyType, typename ValType,
-	typename Comp>
-MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
-	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+template<MgpuSetOp Op, bool Duplicates, typename Comp>
+MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
+	int* bKeys_global, int* bVals_global, int bCount,
+	int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice,
 	Comp comp, CudaContext& context);
 
 // Specialization of SetOpPairs with Comp = mgpu::less<T>.
-template<MgpuSetOp Op, bool Duplicates, typename KeysIt1, typename KeysIt2,
-	typename ValsIt1, typename ValsIt2, typename KeyType, typename ValType>
-MGPU_HOST int SetOpPairs(KeysIt1 aKeys_global, ValsIt1 aVals_global, int aCount,
-	KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	MGPU_MEM(KeyType)* ppKeys_global, MGPU_MEM(ValType)* ppVals_global, 
+template<MgpuSetOp Op, bool Duplicates>
+MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
+	int* bKeys_global, int* bVals_global, int bCount,
+	int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice, 
 	CudaContext& context);
+
+// SetOpPairs runs multiset operations by key and supports value exchange.
+template<MgpuSetOp Op, bool Duplicates, typename Comp>
+MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
+    int* bKeys_global, int* bVals_global, int bCount,
+    int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice,
+	d_matrix*, d_matrix*, d_matrix*,
+    Comp comp, CudaContext& context);
+
+// Specialization of SetOpPairs with Comp = mgpu::less<T>.
+template<MgpuSetOp Op, bool Duplicates>
+MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
+    int* bKeys_global, int* bVals_global, int bCount,
+    int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice, 
+	d_matrix*, d_matrix*, d_matrix*,
+    CudaContext& context);
 
 ////////////////////////////////////////////////////////////////////////////////
 // kernels/segreducecsr.cuh

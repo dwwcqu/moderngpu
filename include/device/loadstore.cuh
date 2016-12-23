@@ -263,16 +263,6 @@ MGPU_DEVICE void DeviceGlobalToShared(int count, InputIt source, int tid,
 	DeviceRegToShared<NT, VT>(reg, tid, dest, sync);
 }
 
-template<int NT, int VT0, int VT1, typename InputIt, typename T>
-MGPU_DEVICE void DeviceGlobalToShared2(int count, InputIt source, int tid,
-	T* dest, bool sync) {
-
-	T reg[VT1];
-	DeviceGlobalToReg2<NT, VT0, VT1>(count, source, tid, reg, false);
-	DeviceRegToShared<NT, VT1>(reg, tid, dest, sync);
-}
-
-
 template<int NT, int VT, typename InputIt, typename T>
 MGPU_DEVICE void DeviceGlobalToSharedDefault(int count, InputIt source, int tid,
 	T* dest, T init, bool sync) {
@@ -656,6 +646,41 @@ MGPU_DEVICE void DeviceTransferMergeValuesReg(int count, const T* a_global,
 	if(sync) __syncthreads();
 }
 
+template<int NT, int VT, typename T>
+MGPU_DEVICE void DeviceTransferMergeValuesReg2(int count, const T* a_global, 
+	const T* b_global, int bStart, int aStart, const int* indices, const int* results, int tid, T* reg,
+	bool sync) {
+
+	int bOffset = (int)(b_global - a_global - bStart);
+	int aOffset = (int)(a_global - b_global - bStart);
+
+	if(count >= NT * VT) {
+		#pragma unroll
+		for(int i = 0; i < VT; ++i) {
+			int gather = indices[i];
+			int gatherB = results[i];
+			if(gather >= bStart) gather += bOffset;
+			if(gatherB >= bStart) gatherB += aOffset;
+			reg[i] = a_global[gather]*b_global[gatherB];
+			//printf("1i:%d, a:%d, b:%d, aCount:%d, bCount:%d, a_ind:%d, b_ind:%d\n", i, a_global[gather], b_global[gatherB], bStart, aStart, gather, gatherB); 
+		}
+	} else {
+		#pragma unroll
+		for(int i = 0; i < VT; ++i) {
+			int index = NT * i + tid;
+			int gather = indices[i];
+			int gatherB = results[i];
+			if(gather >= bStart) gather += bOffset;
+			if(gatherB >= bStart) gatherB += aOffset;
+			if(index < count) {
+				reg[i] = a_global[gather]*b_global[gatherB];
+				//printf("2idx:%d, count:%d, a:%d, b:%d, aCount:%d, bCount:%d, a_ind:%d, b_ind:%d\n", index, count, a_global[gather], b_global[gatherB], bStart, aStart, gather, gatherB); 
+			} 
+		}	
+	}
+	if(sync) __syncthreads();
+}
+
 template<int NT, int VT, typename T, typename OutputIt>
 MGPU_DEVICE void DeviceTransferMergeValuesShared(int count, const T* a_global, 
 	const T* b_global, int bStart, const int* indices_shared, int tid, 
@@ -670,4 +695,34 @@ MGPU_DEVICE void DeviceTransferMergeValuesShared(int count, const T* a_global,
 	DeviceRegToGlobal<NT, VT>(count, reg, tid, dest_global, sync);
 }
 
+template<int NT, int VT, typename T, typename OutputIt>
+MGPU_DEVICE void DeviceTransferMergeValuesShared2(int count, const T* a_global, 
+	const T* b_global, int bStart, int aStart, const int* indices_shared, const int* results_shared, int tid, 
+	OutputIt dest_global, bool sync) {
+
+	int indices[VT];
+	int results[VT];
+	DeviceSharedToReg<NT, VT>(indices_shared, tid, indices);
+	DeviceSharedToReg<NT, VT>(results_shared, tid, results);
+
+	T reg[VT];
+	DeviceTransferMergeValuesReg2<NT, VT>(count, a_global, b_global, bStart, aStart,
+		indices, results, tid, reg, sync);
+	DeviceRegToGlobal<NT, VT>(count, reg, tid, dest_global, sync);
+}
+
+template<int NT, int VT, typename T>
+MGPU_DEVICE void DeviceTransferMergeValuesShared3(int count, const T* a_global, 
+	const T* b_global, int bStart, int aStart, const int* indices_shared, const int* results_shared, 	 int tid, int *reg, bool sync) {
+
+	int indices[VT];
+	int results[VT];
+	DeviceSharedToReg<NT, VT>(indices_shared, tid, indices);
+	DeviceSharedToReg<NT, VT>(results_shared, tid, results);
+
+	//T reg[VT];
+	DeviceTransferMergeValuesReg2<NT, VT>(count, a_global, b_global, bStart, aStart,
+		indices, results, tid, reg, sync);
+	//DeviceRegToGlobal<NT, VT>(count, reg, tid, dest_global, sync);
+}
 } // namespace mgpu
