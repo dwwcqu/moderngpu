@@ -166,7 +166,7 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		for(int i = 0; i < VT; ++i)
 			if((1<< i) & commit) {
 				shared.keys[start++] = indices[i];
-				printf("block:%d,tid:%d,result:%d\n", block, tid, indices[i]);
+				//printf("block:%d,tid:%d,result:%d\n", block, tid, indices[i]);
 				//shared.keys[start++] = results[i];
 			}
 		__syncthreads();
@@ -184,7 +184,7 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		for(int i = 0; i < VT; ++i)
 			if((1<< i) & commit) {
 				shared.indices[start++] = results[i];
-				printf("block:%d,tid:%d,index:%d\n", block, tid, results[i]);
+				//printf("block:%d,tid:%d,index:%d\n", block, tid, results[i]);
 			}
 		__syncthreads();
 	
@@ -196,8 +196,6 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 			shared.indices, tid, keys_global2+globalStart, false);
 
 	}
-	if( threadIdx.x==0 ) 
-		printf("Total: %d\n", outputTotal);
 
 	if(1 != Stage && !tid)
 		counts_global[block] = outputTotal;
@@ -337,9 +335,6 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
     // BalancedPath search to establish partitions.
     MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(a_global,
         aCount, b_global, bCount, NV, comp, context);
-
-	for( int i=0; i<partitionsDevice->Size(); i++ ) 
-		printf("%d ", partitionsDevice->get()[i]);
 
     //MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
     MGPU_MEM(T) keysDevice;
