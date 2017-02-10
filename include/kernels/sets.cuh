@@ -108,11 +108,11 @@ MGPU_DEVICE int DeviceComputeSetAvailability(InputIt1 a_global, int aCount,
 
 template<typename Tuning, MgpuSetOp Op, bool Duplicates, int Stage,
 	bool HasValues, typename KeysIt1, typename KeysIt2, typename KeysIt3,
-	typename ValsIt1, typename ValsIt2, typename Comp>
+	typename KeysIt4, typename ValsIt1, typename ValsIt2, typename Comp>
 MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 	int aCount, KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
 	int* counts_global, const int* bp_global, KeysIt3 keys_global, 
-	KeysIt3 keys_global2, Comp comp) {
+	KeysIt4 keys_global2, Comp comp) {
 
 	typedef typename std::iterator_traits<KeysIt1>::value_type KeyType;
 	typedef typename std::iterator_traits<ValsIt1>::value_type ValType;
@@ -372,9 +372,10 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
 ////////////////////////////////////////////////////////////////////////////////
 // SetOpPairs
 
-template<MgpuSetOp Op, bool Duplicates, typename Comp>
-MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
+template<MgpuSetOp Op, bool Duplicates, typename ValIt1, typename ValIt2, 
+	typename Comp>
+MGPU_HOST int SetOpPairs(int* aKeys_global, ValIt1 aVals_global, int aCount,
+	int* bKeys_global, ValIt2 bVals_global, int bCount,
 	int* ppKeys_global, int* ppKeys_global2, MGPU_MEM(int)* countsDevice,
 	Comp comp, CudaContext& context) {
 
@@ -419,9 +420,9 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	//*ppKeys_global = keysDevice;
 	return total;
 }
-template<MgpuSetOp Op, bool Duplicates>
-MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
+template<MgpuSetOp Op, bool Duplicates, typename ValIt1, typename ValIt2>
+MGPU_HOST int SetOpPairs(int* aKeys_global, ValIt1 aVals_global, int aCount,
+	int* bKeys_global, ValIt2 bVals_global, int bCount,
 	int* ppKeys_global, int* ppKeys_global2, MGPU_MEM(int)* countsDevice,
 	CudaContext& context) {
  

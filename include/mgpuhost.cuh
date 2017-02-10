@@ -561,17 +561,18 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
 	int* ppKeys_global, MGPU_MEM(int)* countsDevice, CudaContext& context);
 
 // SetOpPairs runs multiset operations by key and supports value exchange.
-template<MgpuSetOp Op, bool Duplicates, typename Comp>
-MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, MGPU_MEM(int)* countsDevice,
+template<MgpuSetOp Op, bool Duplicates, typename ValIt1, typename ValIt2, 
+	typename Comp>
+MGPU_HOST int SetOpPairs(int* aKeys_global, ValIt1 aVals_global, int aCount,
+	int* bKeys_global, ValIt2 bVals_global, int bCount,
+	int* ppKeys_global, int *ppVals_global, MGPU_MEM(int)* countsDevice,
 	Comp comp, CudaContext& context);
 
 // Specialization of SetOpPairs with Comp = mgpu::less<T>.
-template<MgpuSetOp Op, bool Duplicates>
-MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, MGPU_MEM(int)* countsDevice, 
+template<MgpuSetOp Op, bool Duplicates, typename ValIt1, typename ValIt2>
+MGPU_HOST int SetOpPairs(int* aKeys_global, ValIt1 aVals_global, int aCount,
+	int* bKeys_global, ValIt2 bVals_global, int bCount,
+	int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice, 
 	CudaContext& context);
 
 ////////////////////////////////////////////////////////////////////////////////
