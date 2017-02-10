@@ -65,11 +65,16 @@ MGPU_DEVICE int SerialSetIntersection(const T* data, int aBegin, int aEnd,
 			
 			// The outputs must come from A by definition of set interection.
 			indices[i] = aBegin;
-			results[i] = bBegin-aEnd;
+			//results[i] = bKey;
+			//results[i] = bBegin;
+			results[i] = bBegin-aEnd-1;
 
 			if(!pB) ++aBegin;
 			if(!pA) ++bBegin;
-			if(pA == pB) commit |= 1<< i;
+			if(pA == pB) {
+				commit |= 1<< i;
+				//printf("%d: %d, %d\n", threadIdx.x, indices[i], results[i]);
+			}
 		}
 	}
 	return commit;

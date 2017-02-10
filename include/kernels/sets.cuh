@@ -39,8 +39,6 @@
 #include "../kernels/scan.cuh"
 #include "../kernels/search.cuh"
 
-#include <matrix.hpp>
-
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -77,8 +75,8 @@ MGPU_DEVICE int DeviceComputeSetAvailability(InputIt1 a_global, int aCount,
 	// array.
 	int aCount2 = a1 - a0;
 	int bCount2 = b1 - b0;
-	//extended = (a1 < aCount) && (b1 < bCount);
-	extended = false;
+	extended = (a1 < aCount) && (b1 < bCount);
+	//extended = false;
 	int bStart = aCount2 + (int)extended;
 
 	DeviceLoad2ToShared<NT, VT, VT + 1>(a_global + a0, aCount2 + (int)extended,
@@ -110,11 +108,11 @@ MGPU_DEVICE int DeviceComputeSetAvailability(InputIt1 a_global, int aCount,
 
 template<typename Tuning, MgpuSetOp Op, bool Duplicates, int Stage,
 	bool HasValues, typename KeysIt1, typename KeysIt2, typename KeysIt3,
-	typename ValsIt1, typename ValsIt2, typename ValsIt3, typename Comp>
+	typename ValsIt1, typename ValsIt2, typename Comp>
 MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 	int aCount, KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	int* counts_global, const int* bp_global, KeysIt3 keys_global, KeysIt3 keys_global2,
-	ValsIt3 values_global, Comp comp) {
+	int* counts_global, const int* bp_global, KeysIt3 keys_global, 
+	KeysIt3 keys_global2, Comp comp) {
 
 	typedef typename std::iterator_traits<KeysIt1>::value_type KeyType;
 	typedef typename std::iterator_traits<ValsIt1>::value_type ValType;
@@ -166,166 +164,40 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		int start = scan;
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
-			if((1<< i) & commit)
+			if((1<< i) & commit) {
 				shared.keys[start++] = indices[i];
+				printf("block:%d,tid:%d,result:%d\n", block, tid, indices[i]);
 				//shared.keys[start++] = results[i];
+			}
 		__syncthreads();
 
 		// Store keys to global memory.
-		DeviceSharedToGlobal<NT, VT>(outputTotal, shared.keys, tid, 
-			keys_global + globalStart);
+		//DeviceSharedToGlobal<NT, VT>(outputTotal, shared.keys, tid, 
+		//	keys_global + globalStart);
+		DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, aVals_global+range.z,
+			shared.keys, tid, keys_global+globalStart, false);
 
-		if(HasValues) {
-			// indices[] has gather indices in thread order. Compact and store
-			// these to shared memory for a transpose to strided order.		
-			start = scan;
-			#pragma unroll
-			for(int i = 0; i < VT; ++i)
-				if((1<< i) & commit)
-					shared.indices[start++] = results[i];
-			__syncthreads();
-	
-		// Store keys to global memory.
-		DeviceSharedToGlobal<NT, VT>(outputTotal, shared.indices, tid, 
-			keys_global2 + globalStart);
-
-			aVals_global += range.x;
-			bVals_global += range.z;
-			values_global += globalStart;
-			if(MgpuSetOpIntersection == Op)
-				DeviceTransferMergeValuesShared2<NT, VT>(outputTotal,
-					aVals_global, bVals_global, aCount + (int)extended, bCount + (int)extended, 
-					shared.keys, shared.indices, tid, values_global, false);
-			else if(MgpuSetOpIntersection == Op || MgpuSetOpDiff == Op)
-				DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, aVals_global,
-					shared.keys, tid, values_global, false);
-			else
-				DeviceTransferMergeValuesShared<NT, VT>(outputTotal,
-					aVals_global, bVals_global, aCount + (int)extended,
-					shared.keys, tid, values_global, false);
-		}
-	}
-
-	if(1 != Stage && !tid)
-		counts_global[block] = outputTotal;
-}
-
-// Custom Intersection+SpGEMM
-template<typename Tuning, MgpuSetOp Op, bool Duplicates, int Stage,
-	bool HasValues, typename KeysIt1, typename KeysIt2, typename KeysIt3,
-	typename ValsIt1, typename ValsIt2, typename ValsIt3, typename Comp>
-MGPU_LAUNCH_BOUNDS void KernelSetOp2(KeysIt1 aKeys_global, ValsIt1 aVals_global,
-	int aCount, KeysIt2 bKeys_global, ValsIt2 bVals_global, int bCount,
-	int* counts_global, const int* bp_global, KeysIt3 keys_global, KeysIt3 keys_global2,
-	ValsIt3 values_global, Comp comp) {
-
-	typedef typename std::iterator_traits<KeysIt1>::value_type KeyType;
-	typedef typename std::iterator_traits<ValsIt1>::value_type ValType;
-	typedef MGPU_LAUNCH_PARAMS Params;
-	const int NT = Params::NT;
-	const int VT = Params::VT;
-	const int NV = NT * VT;
-
-	typedef CTAReduce<NT> R;
-	typedef CTAScan<NT> S;
-
-	union Shared {
-		KeyType keys[NT * (VT + 1)];
-		int indices[NV];
-		int products[NV];
-		typename R::Storage reduceStorage;
-		typename S::Storage scanStorage;
-	};
-	__shared__ Shared shared;
-
-	int tid = threadIdx.x;
-	int block = blockIdx.x;
-	
-	// Run the set operation. Return a bitfield for the selected keys.
-	KeyType results[VT];
-	int indices[VT];
-	int crossproducts[VT];
-	int4 range;
-	bool extended;
-	int commit = DeviceComputeSetAvailability<NT, VT, Op, Duplicates>(
-		aKeys_global, aCount, bKeys_global, bCount, bp_global, comp, tid, block,
-		results, indices, range, extended, shared.keys);
-	aCount = range.y - range.x;
-	bCount = range.w - range.z;
-
-	// scan or reduce over the number of emitted keys per thread.
-	int outputCount = popc(commit);
-	int outputTotal;
-	if(0 == Stage) {
-		// Stage 0 - count the outputs.
-		outputTotal = R::Reduce(tid, outputCount, shared.reduceStorage);
-	} else {
-		int globalStart = (1 == Stage) ? counts_global[block] : (NV * block);
-
-		//if( tid==0 ) printf("Global start:%d\n", globalStart);
-
-		// Stage 1 or 2 - stream the keys.
-		int scan = S::Scan(tid, outputCount, shared.scanStorage, &outputTotal);
-
-		// Write the commit results to shared memory.
-		int start = scan;
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-			if((1<< i) & commit)
-				shared.keys[start++] = indices[i];
-				//shared.keys[start++] = results[i];
-		__syncthreads();
-
-		// Store keys to global memory.
-		DeviceSharedToGlobal<NT, VT>(outputTotal, shared.keys, tid, 
-			keys_global + globalStart);
-
-		if(HasValues) {
-			// indices[] has gather indices in thread order. Compact and store
-			// these to shared memory for a transpose to strided order.		
-			start = scan;
-			#pragma unroll
-			for(int i = 0; i < VT; ++i)
-				if((1<< i) & commit)
-					shared.indices[start++] = results[i];
-			__syncthreads();
-	
-		// Store keys to global memory.
-		DeviceSharedToGlobal<NT, VT>(outputTotal, shared.indices, tid, 
-			keys_global2 + globalStart);
-
-			aVals_global += range.x;
-			bVals_global += range.z;
-			values_global += globalStart;
-			if(MgpuSetOpIntersection == Op)
-				DeviceTransferMergeValuesShared3<NT, VT>(outputTotal,
-					aVals_global, bVals_global, aCount + (int)extended, bCount + (int)extended, 
-					shared.keys, shared.indices, tid, crossproducts, false);
-			else if(MgpuSetOpIntersection == Op || MgpuSetOpDiff == Op)
-				DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, aVals_global,
-					shared.keys, tid, values_global, false);
-			else
-				DeviceTransferMergeValuesShared<NT, VT>(outputTotal,
-					aVals_global, bVals_global, aCount + (int)extended,
-					shared.keys, tid, values_global, false);
-		// Do scan on 
-		int sum = 0;
-		int sumTotal = 0;
+		// indices[] has gather indices in thread order. Compact and store
+		// these to shared memory for a transpose to strided order.		
 		start = scan;
 		#pragma unroll
-		for( int i=0; i< VT; ++i )
-			if((1<< i) & commit)
-				shared.products[start++]+=crossproducts[i];
+		for(int i = 0; i < VT; ++i)
+			if((1<< i) & commit) {
+				shared.indices[start++] = results[i];
+				printf("block:%d,tid:%d,index:%d\n", block, tid, results[i]);
+			}
 		__syncthreads();
+	
+		// Store keys to global memory.
+		//DeviceSharedToGlobal<NT, VT>(outputTotal, shared.indices, tid, 
+		//	keys_global2 + globalStart);
 
-		if( block==0 && tid<20 ) printf("idx:%d, product:%d, product:%d\n", tid, shared.products[tid], shared.products[tid]);
-		int scan = S::Scan(tid, sum, shared.scanStorage, &sumTotal);
-		if( block==0 && tid<20 ) printf("idx:%d, scan:%d\n", tid, scan);
+		DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, bVals_global+range.z,
+			shared.indices, tid, keys_global2+globalStart, false);
 
-		// Begin loading in load-imbalanced way
-		
-		}
 	}
+	if( threadIdx.x==0 ) 
+		printf("Total: %d\n", outputTotal);
 
 	if(1 != Stage && !tid)
 		counts_global[block] = outputTotal;
@@ -466,6 +338,9 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
     MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(a_global,
         aCount, b_global, bCount, NV, comp, context);
 
+	for( int i=0; i<partitionsDevice->Size(); i++ ) 
+		printf("%d ", partitionsDevice->get()[i]);
+
     //MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
     MGPU_MEM(T) keysDevice;
     int total;
@@ -505,7 +380,7 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
 template<MgpuSetOp Op, bool Duplicates, typename Comp>
 MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppKeys_global2, int* ppVals_global, MGPU_MEM(int)* countsDevice,
+	int* ppKeys_global, int* ppKeys_global2, MGPU_MEM(int)* countsDevice,
 	Comp comp, CudaContext& context) {
 
 	const int NT = 128;
@@ -519,13 +394,19 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(aKeys_global,
 		aCount, bKeys_global, bCount, NV, comp, context);
 
+	int *h_part = (int*)malloc(partitionsDevice->Size()*sizeof(int));
+	cudaMemcpy(h_part, partitionsDevice->get(), partitionsDevice->Size()*
+		sizeof(int), cudaMemcpyDeviceToHost );
+	for( int i=0; i<partitionsDevice->Size(); i++ ) 
+		printf("%d ", h_part[i]);
+
 	// Run the kernel once to count outputs per block.
 	//MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
 	KernelSetOp<Tuning, Op, Duplicates, 0, false>
 		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global,
 		(const int*)0, aCount, bKeys_global, (const int*)0, bCount, 
-		(*countsDevice)->get(), partitionsDevice->get(), (int*)0, (int*)0, (int*)0,
-		comp);
+		(*countsDevice)->get(), partitionsDevice->get(), (int*)0, 
+		(int*)0, comp);
 	MGPU_SYNC_CHECK("KernelSetOp");
 
 	// Scan outputs and allocate output arrays.
@@ -538,79 +419,23 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	KernelSetOp<Tuning, Op, Duplicates, 1, true>
 		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global, 
 		aVals_global, aCount, bKeys_global, bVals_global, bCount,
-		(*countsDevice)->get(), partitionsDevice->get(), ppKeys_global, ppKeys_global2,
-		ppVals_global, comp);
+		(*countsDevice)->get(), partitionsDevice->get(), ppKeys_global, 
+		ppKeys_global2, comp);
 	MGPU_SYNC_CHECK("KernelSetOp");
 
 	//*ppKeys_global = keysDevice;
-	//*ppVals_global = valsDevice;
 	return total;
 }
 template<MgpuSetOp Op, bool Duplicates>
 MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppKeys_global2, int* ppVals_global, MGPU_MEM(int)* countsDevice,
+	int* ppKeys_global, int* ppKeys_global2, MGPU_MEM(int)* countsDevice,
 	CudaContext& context) {
  
 	typedef mgpu::less<typename std::iterator_traits<int*>::value_type> Comp;
 	return SetOpPairs<Op, Duplicates>(aKeys_global, aVals_global, aCount,
-		bKeys_global, bVals_global, bCount, ppKeys_global, ppKeys_global2, ppVals_global, countsDevice,
-		Comp(), context);
-}
-
-template<MgpuSetOp Op, bool Duplicates, typename Comp>
-MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppKeys_global2, int* ppVals_global, MGPU_MEM(int)* countsDevice,
-	Comp comp, d_matrix *A, d_matrix *B, d_matrix *C, CudaContext& context) {
-
-	const int NT = 128;
-	const int VT = 7;
-	typedef LaunchBoxVT<NT, VT> Tuning;
-	int2 launch = Tuning::GetLaunchParams(context);
-	const int NV = launch.x * launch.y;
-	int numBlocks = MGPU_DIV_UP(aCount + bCount, NV);
-
-	// BalancedPath search to establish partitions.
-	MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(aKeys_global,
-		aCount, bKeys_global, bCount, NV, comp, context);
-
-	// Run the kernel once to count outputs per block.
-	//MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
-	KernelSetOp2<Tuning, Op, Duplicates, 0, false>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global,
-		(const int*)0, aCount, bKeys_global, (const int*)0, bCount, 
-		(*countsDevice)->get(), partitionsDevice->get(), (int*)0, (int*)0, (int*)0,
-		comp);
-	MGPU_SYNC_CHECK("KernelSetOp");
-
-	// Scan outputs and allocate output arrays.
-	int total;
-	ScanExc((*countsDevice)->get(), numBlocks, &total, context);
-	//MGPU_MEM(KeyType) keysDevice = context.Malloc<KeyType>(total);
-	//MGPU_MEM(ValType) valsDevice = context.Malloc<ValType>(total);
-
-	// Recompute and stream the outputs.
-	KernelSetOp2<Tuning, Op, Duplicates, 1, true>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(aKeys_global, 
-		aVals_global, aCount, bKeys_global, bVals_global, bCount,
-		(*countsDevice)->get(), partitionsDevice->get(), ppKeys_global, ppKeys_global2,
-		ppVals_global, comp);
-	MGPU_SYNC_CHECK("KernelSetOp");
-
-	//*ppKeys_global = keysDevice;
-	//*ppVals_global = valsDevice;
-	return total;
-}
-template<MgpuSetOp Op, bool Duplicates>
-MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
-	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppKeys_global2, int* ppVals_global, MGPU_MEM(int)* countsDevice, d_matrix *A, d_matrix *B, d_matrix *C, CudaContext& context) {
- 
-	typedef mgpu::less<typename std::iterator_traits<int*>::value_type> Comp;
-	return SetOpPairs2<Op, Duplicates>(aKeys_global, aVals_global, aCount,
-		bKeys_global, bVals_global, bCount, ppKeys_global, ppKeys_global2, ppVals_global, countsDevice,
-		Comp(), A, B, C, context);
+		bKeys_global, bVals_global, bCount, ppKeys_global, ppKeys_global2, 
+		countsDevice, Comp(), context);
 }
 
 } // namespace mgpu

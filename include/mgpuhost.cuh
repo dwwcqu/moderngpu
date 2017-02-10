@@ -37,8 +37,6 @@
 #include "mgpudevice.cuh"
 #include "util/mgpucontext.h"
 
-#include <matrix.hpp>
-
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -566,31 +564,15 @@ MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
 template<MgpuSetOp Op, bool Duplicates, typename Comp>
 MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice,
+	int* ppKeys_global, MGPU_MEM(int)* countsDevice,
 	Comp comp, CudaContext& context);
 
 // Specialization of SetOpPairs with Comp = mgpu::less<T>.
 template<MgpuSetOp Op, bool Duplicates>
 MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int* bKeys_global, int* bVals_global, int bCount,
-	int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice, 
+	int* ppKeys_global, MGPU_MEM(int)* countsDevice, 
 	CudaContext& context);
-
-// SetOpPairs runs multiset operations by key and supports value exchange.
-template<MgpuSetOp Op, bool Duplicates, typename Comp>
-MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
-    int* bKeys_global, int* bVals_global, int bCount,
-    int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice,
-	d_matrix*, d_matrix*, d_matrix*,
-    Comp comp, CudaContext& context);
-
-// Specialization of SetOpPairs with Comp = mgpu::less<T>.
-template<MgpuSetOp Op, bool Duplicates>
-MGPU_HOST int SetOpPairs2(int* aKeys_global, int* aVals_global, int aCount,
-    int* bKeys_global, int* bVals_global, int bCount,
-    int* ppKeys_global, int* ppVals_global, MGPU_MEM(int)* countsDevice, 
-	d_matrix*, d_matrix*, d_matrix*,
-    CudaContext& context);
 
 ////////////////////////////////////////////////////////////////////////////////
 // kernels/segreducecsr.cuh
