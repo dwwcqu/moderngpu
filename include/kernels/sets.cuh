@@ -392,8 +392,6 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int *h_part = (int*)malloc(partitionsDevice->Size()*sizeof(int));
 	cudaMemcpy(h_part, partitionsDevice->get(), partitionsDevice->Size()*
 		sizeof(int), cudaMemcpyDeviceToHost );
-	for( int i=0; i<partitionsDevice->Size(); i++ ) 
-		printf("%d ", h_part[i]);
 
 	// Run the kernel once to count outputs per block.
 	//MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
