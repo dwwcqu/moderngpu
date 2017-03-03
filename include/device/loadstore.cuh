@@ -567,6 +567,7 @@ MGPU_DEVICE void DeviceGatherGlobalToGlobal(int count, InputIt data_global,
 		if(index < count) {
 			int gather = indices_shared[index];
 			values[i] = data_global[gather];
+			//if( tid==0 ) printf("index:%d, value:%d\n", gather, values[i]);
 		}
 	}
 	if(sync) __syncthreads();

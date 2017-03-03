@@ -76,6 +76,7 @@ MGPU_DEVICE int DeviceComputeSetAvailability(InputIt1 a_global, int aCount,
 	int aCount2 = a1 - a0;
 	int bCount2 = b1 - b0;
 	extended = (a1 < aCount) && (b1 < bCount);
+	//if( threadIdx.x <=1 ) printf("bid:%d,tid:%d,a1:%d,aCount:%d,b1:%d,bCount:%d,ext:%d\n", block, threadIdx.x, a1, aCount, b1, bCount, extended );
 	//extended = false;
 	int bStart = aCount2 + (int)extended;
 
@@ -166,7 +167,7 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		for(int i = 0; i < VT; ++i)
 			if((1<< i) & commit) {
 				shared.keys[start++] = indices[i];
-				//printf("block:%d,tid:%d,result:%d\n", block, tid, indices[i]);
+				//if(threadIdx.x==0) printf("block:%d,tid:%d,result:%d\n", block, tid, indices[i]);
 				//shared.keys[start++] = results[i];
 			}
 		__syncthreads();
@@ -174,8 +175,10 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		// Store keys to global memory.
 		//DeviceSharedToGlobal<NT, VT>(outputTotal, shared.keys, tid, 
 		//	keys_global + globalStart);
-		DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, aVals_global+range.z,
+		DeviceGatherGlobalToGlobal<NT, VT>(outputTotal, aVals_global+range.x,
 			shared.keys, tid, keys_global+globalStart, false);
+
+		__syncthreads();
 
 		// indices[] has gather indices in thread order. Compact and store
 		// these to shared memory for a transpose to strided order.		
@@ -184,7 +187,7 @@ MGPU_LAUNCH_BOUNDS void KernelSetOp(KeysIt1 aKeys_global, ValsIt1 aVals_global,
 		for(int i = 0; i < VT; ++i)
 			if((1<< i) & commit) {
 				shared.indices[start++] = results[i];
-				//printf("block:%d,tid:%d,index:%d\n", block, tid, results[i]);
+				//if(threadIdx.x==0) printf("block:%d,tid:%d,index:%d\n", block, tid, results[i]);
 			}
 		__syncthreads();
 	
@@ -238,86 +241,6 @@ __global__ void KernelSetCompact(const T* source_global, const int* scan_global,
 
 ////////////////////////////////////////////////////////////////////////////////
 // SetOpKeys
-
-
-/*template<MgpuSetOp Op, bool Duplicates, typename It1, typename It2,
-	typename T, typename Comp>
-MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
-	MGPU_MEM(T)* ppKeys_global, Comp comp, CudaContext& context, bool compact) {
-
-	typedef LaunchBoxVT<
-		128, 23, 0,
-		128, 11, 0,
-		128, 11, 0
-	> Tuning;
-	int2 launch = Tuning::GetLaunchParams(context);
-	const int NV = launch.x * launch.y;
-	int numBlocks = MGPU_DIV_UP(aCount + bCount, NV);
-
-	// BalancedPath search to establish partitions.
-	MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(a_global,
-		aCount, b_global, bCount, NV, comp, context);
-
-	MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
-	MGPU_MEM(T) keysDevice;
-	int total;
-	if(compact) {
-		// Allocate enough temporary space for all outputs.
-		MGPU_MEM(T) keysTempDevice = context.Malloc<T>(NV * numBlocks);
-
-		KernelSetOp<Tuning, Op, Duplicates, 2, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(a_global, 
-			(const int*)0, aCount, b_global, (const int*)0, bCount,
-			countsDevice->get(), partitionsDevice->get(), keysTempDevice->get(),
-			(int*)0, comp);
-		MGPU_SYNC_CHECK("KernelSetOp");
-
-		// Scan block counts.
-		Scan<MgpuScanTypeExc>(countsDevice->get(), numBlocks, 0, 
-			mgpu::plus<int>(), countsDevice->get() + numBlocks, &total, 
-			countsDevice->get(), context);
-		
-		// Compact keys into destination.
-		keysDevice = context.Malloc<T>(total);
-
-		const int NT2 = 256;
-		int numCompactBlocks = MGPU_DIV_UP(numBlocks, NT2 / WARP_SIZE);
-		KernelSetCompact<256><<<numCompactBlocks, NT2, 0, context.Stream()>>>(
-			keysTempDevice->get(), countsDevice->get(), numBlocks, NV,
-			keysDevice->get());
-		MGPU_SYNC_CHECK("KernelSetCompact");
-
-	} else {
-		KernelSetOp<Tuning, Op, Duplicates, 0, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(a_global, 
-			(const int*)0, aCount, b_global, (const int*)0, bCount, 
-			countsDevice->get(), partitionsDevice->get(), (T*)0, (int*)0, comp);
-		MGPU_SYNC_CHECK("KernelSetOp");
-
-		// Scan block counts.
-		ScanExc(countsDevice->get(), numBlocks, &total, context);
-
-		// Allocate storage for the keys. Run the set operations again, but
-		// this time stream the outputs.
-		keysDevice = context.Malloc<T>(total);
-		KernelSetOp<Tuning, Op, Duplicates, 1, false>
-			<<<numBlocks, launch.x, 0, context.Stream()>>>(a_global, (int*)0, 
-			aCount, b_global, (int*)0, bCount, countsDevice->get(), 
-			partitionsDevice->get(), keysDevice->get(), (int*)0, comp);
-		MGPU_SYNC_CHECK("KernelSetOp");
-	}
-	*ppKeys_global = keysDevice;
-	return total;
-}
-template<MgpuSetOp Op, bool Duplicates, typename It1, typename It2, typename T>
-MGPU_HOST int SetOpKeys(It1 a_global, int aCount, It2 b_global, int bCount,
-	MGPU_MEM(T)* ppKeys_global, CudaContext& context, bool compact) {
-
-	typedef mgpu::less<typename std::iterator_traits<It1>::value_type> Comp;
-		return SetOpKeys<Op, Duplicates>(a_global, aCount, b_global, bCount, 
-		ppKeys_global, Comp(), context, compact);
-}*/
-
 
 template<MgpuSetOp Op, bool Duplicates, typename T, typename Comp>
 MGPU_HOST int SetOpKeys(int* a_global, int aCount, int* b_global, int bCount,
@@ -386,12 +309,12 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	int numBlocks = MGPU_DIV_UP(aCount + bCount, NV);
 
 	// BalancedPath search to establish partitions.
-	MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(aKeys_global,
-		aCount, bKeys_global, bCount, NV, comp, context);
+	//MGPU_MEM(int) partitionsDevice = FindSetPartitions<Duplicates>(aKeys_global,
+	//	aCount, bKeys_global, bCount, NV, comp, context);
+	MGPU_MEM(int) partitionsDevice = MergePathPartitions<MgpuBoundsUpper>(
+		aKeys_global, aCount, bKeys_global, bCount, NV, 0, comp, context);
 
-	int *h_part = (int*)malloc(partitionsDevice->Size()*sizeof(int));
-	cudaMemcpy(h_part, partitionsDevice->get(), partitionsDevice->Size()*
-		sizeof(int), cudaMemcpyDeviceToHost );
+	//PrintArray(*partitionsDevice, "%6d", 10 ); // numPart = 4
 
 	// Run the kernel once to count outputs per block.
 	//MGPU_MEM(int) countsDevice = context.Malloc<int>(numBlocks + 1);
@@ -407,6 +330,7 @@ MGPU_HOST int SetOpPairs(int* aKeys_global, int* aVals_global, int aCount,
 	ScanExc((*countsDevice)->get(), numBlocks, &total, context);
 	//MGPU_MEM(KeyType) keysDevice = context.Malloc<KeyType>(total);
 	//MGPU_MEM(ValType) valsDevice = context.Malloc<ValType>(total);
+	//PrintArray(**countsDevice, "%6d", 10 ); // numBlocks = 9
 
 	// Recompute and stream the outputs.
 	KernelSetOp<Tuning, Op, Duplicates, 1, true>

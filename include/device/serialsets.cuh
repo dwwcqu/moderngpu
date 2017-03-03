@@ -56,7 +56,7 @@ MGPU_DEVICE int SerialSetIntersection(const T* data, int aBegin, int aEnd,
 			(i < MinIterations || (aBegin + bBegin < end));
 
 		if(test) {
-			//if( threadIdx.x >= 126 ) printf("i:%d, tid:%d, bid:%d, abegin:%d, aend:%d, bbegin:%d, bend:%d\n", i, threadIdx.x, blockIdx.x, aBegin, aEnd, bBegin, bEnd );
+			//if( threadIdx.x == 0 ) printf("i:%d, tid:%d, block:%d, abegin:%d, aend:%d, bbegin:%d, bend:%d\n", i, threadIdx.x, blockIdx.x, aBegin, aEnd, bBegin, bEnd );
 			T aKey = data[aBegin];
 			T bKey = data[bBegin];
 
@@ -67,13 +67,14 @@ MGPU_DEVICE int SerialSetIntersection(const T* data, int aBegin, int aEnd,
 			indices[i] = aBegin;
 			//results[i] = bKey;
 			//results[i] = bBegin;
-			results[i] = bBegin-aEnd-1;
+			//results[i] = bBegin-aEnd;
+			results[i] = bBegin-aEnd-1+RangeCheck;
 
 			if(!pB) ++aBegin;
 			if(!pA) ++bBegin;
 			if(pA == pB) {
 				commit |= 1<< i;
-				//printf("%d: %d, %d\n", threadIdx.x, indices[i], results[i]);
+				//if( threadIdx.x == 0 ) printf("%d, %d: %d, %d\n", blockIdx.x, threadIdx.x, indices[i], results[i]);
 			}
 		}
 	}
