@@ -83,12 +83,12 @@ struct CTASpmvLoad {
 		NV = NT * VT,
 		Capacity = HalfCapacity ? (NV / 2) : NV
 	};
-	typedef CTASegReduce<NT, VT, HalfCapacity, T, MulOp> SegReduce;
+	//typedef CTASegReduce<NT, VT, HalfCapacity, T, MulOp> SegReduce;
 	
 	union Storage {
 		int sources[NV];
 		T data[Capacity];
-		typename SegReduce::Storage segReduceStorage;
+		//typename SegReduce::Storage segReduceStorage;
 	};
 
 	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
