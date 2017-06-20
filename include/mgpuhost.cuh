@@ -778,6 +778,13 @@ MGPU_HOST void SpmvCsrBinary(MatrixIt matrix_global, ColsIt cols_global,
 	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp, 
 	CudaContext& context);
 
+template<typename MatrixIt, typename ColsIt, typename CsrIt, typename VecIt,
+	typename DestIt, typename T, typename MulOp, typename AddOp>
+MGPU_HOST void SpmmCsrBinary(MatrixIt matrix_global, ColsIt cols_global, 
+	int nz, CsrIt csr_global, int numRows, VecIt vec_global, 
+	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp, 
+	const int B_ncols, CudaContext& context);
+
 template<typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
 	typename DestIt, typename T, typename AddOp>
 MGPU_HOST void SpmvCsrIndirectUnary(ColsIt cols_global, int nz, 

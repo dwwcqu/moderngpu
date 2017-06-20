@@ -38,10 +38,22 @@
 #include "../kernels/segreduce.cuh"
 #include "../kernels/bulkinsert.cuh"
 
+#define MGPU_TB 32
+
 namespace mgpu {
 
 template<size_t Size, bool LoadLeft>
 struct SpmvTuningNormal {
+	enum { Indirect = false };
+	typedef LaunchBox<
+		SegReduceTuning<128, 11, 0, false, false>,
+		SegReduceTuning<128, 11, 0, true, false>,
+		SegReduceTuning<128, 7, 0, true, false>
+	> Tuning;
+};
+
+template<size_t Size, bool LoadLeft>
+struct SpmmTuningNormal {
 	enum { Indirect = false };
 	typedef LaunchBox<
 		SegReduceTuning<128, 11, 0, false, false>,
@@ -112,6 +124,52 @@ struct CTASpmvLoad {
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
 			vecData[i] = ldg(vec_global + columns[i]);
+		
+		// Clear out the out-of-range inputs. 
+		if(count2 < NV) {
+			#pragma unroll
+			for(int i = 0; i < VT; ++i)
+				if(NT * i + tid >= count2)
+					vecData[i] = identity;
+		}	
+
+		// Multiply matrix and vector values together.
+		T stridedData[VT];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+			stridedData[i] = LoadLeft ? 
+				mulOp(matrixData[i], vecData[i]) : vecData[i];
+
+		// Transpose from strided to thread order.
+		if(HalfCapacity)
+			HalfSmemTranspose<NT, VT>(stridedData, tid, storage.data, data);
+		else {
+			DeviceRegToShared<NT, VT>(stridedData, tid, storage.data);
+			DeviceSharedToThread<VT>(storage.data, tid, data);
+		}
+	}
+
+	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
+	MGPU_DEVICE static void LoadDirectSpmm(int count2, int tid, int gid, 
+		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
+		T identity, MulOp mulOp, T data[VT], Storage& storage, const int B_ncols) {
+
+		// Load columns directly from cols_global.
+		int columns[VT];
+		DeviceGlobalToRegDefault<NT, VT>(count2, cols_global + gid, tid,
+			columns, 0);
+
+		// Load data into stridedData.
+		T matrixData[VT];
+		if(LoadLeft)
+			DeviceGlobalToRegDefault<NT, VT>(count2, matrix_global + gid,
+				tid, matrixData, identity);
+		
+		// Use ldg to load vector data in strided order.
+		T vecData[VT];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+			vecData[i] = ldg(vec_global + columns[i]*B_ncols);
 		
 		// Clear out the out-of-range inputs. 
 		if(count2 < NV) {
@@ -283,6 +341,88 @@ MGPU_LAUNCH_BOUNDS void KernelSpmvCsr(MatrixIt matrix_global,
 		identity, addOp, shared.segReduceStorage);
 }
 
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
+	typename DestIt, typename T, typename MulOp, typename AddOp>
+MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
+	ColsIt cols_global, int nz, CsrIt csr_global, SourcesIt sources_global, 
+	VecIt vec_global, const int* limits_global, DestIt dest_global,
+	T* carryOut_global, T identity, MulOp mulOp, AddOp addOp, const int B_ncols) {
+
+	typedef MGPU_LAUNCH_PARAMS Params;
+	const int NT = Params::NT;
+	const int VT = Params::VT;
+	const int NV = NT * VT;
+	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
+
+	typedef CTAReduce<NT, AddOp> FastReduce;
+	typedef CTASegReduce<NT, VT, HalfCapacity, T, AddOp> SegReduce;
+	typedef CTASpmvLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmvLoad;
+
+	union Shared {
+		int csr[NV + 1];
+		typename SegReduce::Storage segReduceStorage;
+		typename SpmvLoad::Storage spmvLoadStorage;
+	};
+	__shared__ Shared shared;
+
+	int tid = threadIdx.x;
+	int block = blockIdx.x;
+	int gid = NV * block;
+	int count2 = min(NV, nz - gid);
+
+	// Retrieve the left and right row limits.
+	int limit0 = limits_global[block];
+	int limit1 = limits_global[block + 1];
+
+	SegReduceRange range;
+	SegReduceTerms terms;
+	int rows[VT + 1], rowStarts[VT];
+	T data[VT];
+
+	if(Indirect) {
+		// Transform the row limits into ranges.
+		range = DeviceShiftRange(limit0, limit1);
+		int numRows = range.end - range.begin;
+
+		// Load the CSR interval.
+		DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+			shared.csr);
+
+		// Flatten CSR->COO and return the segmented scan terms.
+		terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid, 
+			range.flushLast, rows, rowStarts);
+
+		// Load tile of data in thread order from row IDs.
+		SpmvLoad::LoadIndirect(count2, tid, gid, numRows, range.begin, rows, 
+			rowStarts, sources_global, matrix_global, cols_global, vec_global,
+			identity, mulOp, data, shared.spmvLoadStorage);
+	} else {
+		// This is a direct load so we don't have a data-dependency on the
+		// limits.
+		SpmvLoad::LoadDirectSpmm(count2, tid, gid, matrix_global, cols_global,
+			vec_global, identity, mulOp, data, shared.spmvLoadStorage, B_ncols);
+
+		// Transform the row limits into ranges.
+		range = DeviceShiftRange(limit0, limit1);
+		int numRows = range.end - range.begin;
+
+		// Load the CSR interval.
+		DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+			shared.csr);
+
+		// Flatten CSR->COO and return the segmented scan terms.
+		terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
+			range.flushLast, rows, rowStarts);
+	}
+
+	// Reduce tile data and store to dest_global. Write tile's carry-out
+	// term to carryOut_global.
+	SegReduce::ReduceToGlobal(rows, range.total, terms.tidDelta, 
+		range.begin, block, tid, data, dest_global, carryOut_global,
+		identity, addOp, shared.segReduceStorage);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // SpmvCsrHost
 
@@ -317,6 +457,36 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		carryOutDevice->get(), identity, addOp, context);
 }
 
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
+	typename DestIt, typename T, typename MulOp, typename AddOp>
+MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
+	CsrIt csr_global, SourcesIt sources_global, int numRows, 
+	const int* numRows2_global, VecIt vec_global, DestIt dest_global,
+	T identity, MulOp mulOp, AddOp addOp, const int B_ncols, CudaContext& context) {
+
+	int2 launch = Tuning::GetLaunchParams(context);
+	int NV = launch.x * launch.y;
+
+	int numBlocks = MGPU_DIV_UP(nz, NV);
+
+	// Use upper-bound binary search to partition the CSR structure into tiles.
+	MGPU_MEM(int) limitsDevice = PartitionCsrSegReduce(nz, NV, csr_global,
+		numRows, numRows2_global, numBlocks + 1, context);
+		
+	// Evaluate the Spmv product.
+	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
+	KernelSpmmCsr<Tuning, Indirect, LoadLeft>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
+		cols_global, nz, csr_global, sources_global, vec_global, 
+		limitsDevice->get(), dest_global, carryOutDevice->get(), identity, 
+		mulOp, addOp, B_ncols);
+	MGPU_SYNC_CHECK("KernelSpmmCsr");
+
+	// Add the carry-in values.
+	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
+		carryOutDevice->get(), identity, addOp, context);
+}
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
 	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
@@ -355,6 +525,43 @@ MGPU_HOST void SpmvCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	}
 }
 
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
+	typename DestIt, typename T, typename MulOp, typename AddOp>
+MGPU_HOST void SpmmCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
+	CsrIt csr_global, SourcesIt sources_global, int numRows, VecIt vec_global,
+	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp,
+	const int B_ncols, CudaContext& context) {
+		
+	if(supportEmpty) {
+		// Allocate space for CSR2 and Sources2.
+		MGPU_MEM(int) csr2Device = context.Malloc<int>(numRows + 1);
+		MGPU_MEM(int) sources2Device;
+		if(Indirect) sources2Device = context.Malloc<int>(numRows);
+
+		// Strip the empties from CSR and store in CSR2.
+		CsrStripEmpties<Indirect>(nz, csr_global, sources_global, numRows,
+			csr2Device->get(), Indirect ? sources2Device->get() : (int*)0, 
+			(int*)0, context);
+
+		// Run the Spmv in the CSR2 coordinate space.
+		MGPU_MEM(T) destDevice = context.Malloc<T>(numRows);
+		SpmmCsrInner<Tuning, Indirect, LoadLeft>(matrix_global, cols_global, nz,
+			csr2Device->get(), Indirect ? sources2Device->get() : (const int*)0,
+			-1, csr2Device->get() + numRows, vec_global,
+			destDevice->get(), identity, mulOp, addOp, B_ncols, context);
+		
+		// Transform into the CSR space with BulkInsert.
+		CsrBulkInsert(csr2Device->get(), numRows, destDevice->get(), identity,
+			dest_global, context);
+
+	} else {
+		SpmmCsrInner<Tuning, Indirect, LoadLeft>(matrix_global, cols_global, nz,
+			csr_global, sources_global, numRows, (const int*)0, vec_global, 
+			dest_global, identity, mulOp, addOp, B_ncols, context);
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Spmv host functions
 
@@ -386,6 +593,19 @@ MGPU_HOST void SpmvCsrBinary(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	SpmvCsrHost<Tuning, false, true>(matrix_global, cols_global, nz, csr_global,
 		(const int*)0, numRows, vec_global, supportEmpty, dest_global, 
 		identity, mulOp, addOp, context);
+}
+
+template<typename MatrixIt, typename ColsIt, typename CsrIt, typename VecIt,
+	typename DestIt, typename T, typename MulOp, typename AddOp>
+MGPU_HOST void SpmmCsrBinary(MatrixIt matrix_global, ColsIt cols_global, int nz,
+	CsrIt csr_global, int numRows, VecIt vec_global, bool supportEmpty, 
+	DestIt dest_global, T identity, MulOp mulOp, AddOp addOp, const int B_ncols,
+	CudaContext& context) {
+			
+	typedef typename SpmmTuningNormal<sizeof(T), true>::Tuning Tuning;
+	SpmmCsrHost<Tuning, false, true>(matrix_global, cols_global, nz, csr_global,
+		(const int*)0, numRows, vec_global, supportEmpty, dest_global, 
+		identity, mulOp, addOp, B_ncols, context);
 }
 
 template<typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
