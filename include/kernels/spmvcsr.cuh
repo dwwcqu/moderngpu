@@ -58,7 +58,8 @@ struct SpmmTuningNormal {
 	typedef LaunchBox<
 		SegReduceTuning<128, 11, 0, false, false>,
 		SegReduceTuning<128, 11, 0, true, false>,
-		SegReduceTuning<128, 4,  0, true, false>
+		SegReduceTuning<128,  7,  0, true, false>
+		//SegReduceTuning<64,  1,  0, true, false>
 	> Tuning;
 };
 
@@ -173,7 +174,7 @@ struct CTASpmvLoad {
     //   T vecData[VT] -> T vecData[VT*MGPU_TB]
 		T vecData[VT*MGPU_TB];
 		#pragma unroll
-		for(int j = 0; j < MGPU_TB; ++i)
+		for(int j = 0; j < MGPU_TB; ++j)
     {
 			vecData[j     ] = ldg(vec_global + columns[0]*B_ncols + j);
       vecData[j+VT*1] = ldg(vec_global + columns[1]*B_ncols + j);
@@ -362,8 +363,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	typedef MGPU_LAUNCH_PARAMS Params;
 	const int NT = Params::NT;
 	const int VT = Params::VT;
-  // TODO: Need more NV
-	const int NV = NT * VT;
+  // DONE: Need more NV
+	const int NV = NT * VT * MGPU_TB;
 	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
 
 	typedef CTAReduce<NT, AddOp> FastReduce;
