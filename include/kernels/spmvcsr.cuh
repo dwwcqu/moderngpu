@@ -38,7 +38,8 @@
 #include "../kernels/segreduce.cuh"
 #include "../kernels/bulkinsert.cuh"
 
-#define MGPU_TB 32
+#define MGPU_TB 4
+#define MGPU_BC 64
 
 namespace mgpu {
 
@@ -58,7 +59,7 @@ struct SpmmTuningNormal {
 	typedef LaunchBox<
 		SegReduceTuning<128, 11, 0, false, false>,
 		SegReduceTuning<128, 11, 0, true, false>,
-		SegReduceTuning<128, 7, 0, true, false>
+		SegReduceTuning<128, 8, 0, true, false>
 	> Tuning;
 };
 
@@ -152,46 +153,66 @@ struct CTASpmvLoad {
 	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
 	MGPU_DEVICE static void LoadDirectSpmm(int count2, int tid, int gid, 
 		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
-		T identity, MulOp mulOp, T data[VT], Storage& storage, const int B_ncols) {
+		T identity, MulOp mulOp, T data[VT*MGPU_TB], Storage& storage) {
 
-		// Load columns directly from cols_global.
+		// Load column indices directly from cols_global.
 		int columns[VT];
 		DeviceGlobalToRegDefault<NT, VT>(count2, cols_global + gid, tid,
 			columns, 0);
 
-		// Load data into stridedData.
+		// Load values into stridedData.
 		T matrixData[VT];
 		if(LoadLeft)
 			DeviceGlobalToRegDefault<NT, VT>(count2, matrix_global + gid,
 				tid, matrixData, identity);
 		
 		// Use ldg to load vector data in strided order.
-		T vecData[VT];
+		T vecData[VT*MGPU_TB];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
-			vecData[i] = ldg(vec_global + columns[i]*B_ncols);
-		
+		{
+      #pragma unroll
+      for( int j=0; j<MGPU_TB; j++ )
+    	  vecData[i*MGPU_TB+j] = ldg(vec_global + columns[i]*MGPU_BC + j);
+    }
+
 		// Clear out the out-of-range inputs. 
-		if(count2 < NV) {
+		if(count2 < NV)
+    {
 			#pragma unroll
 			for(int i = 0; i < VT; ++i)
 				if(NT * i + tid >= count2)
-					vecData[i] = identity;
+				{
+        	#pragma unroll
+          for( int j=0; j<MGPU_TB; j++ )
+            vecData[i*MGPU_TB+j] = identity;
+        }
 		}	
 
 		// Multiply matrix and vector values together.
-		T stridedData[VT];
+		T stridedData[VT*MGPU_TB];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
-			stridedData[i] = LoadLeft ? 
-				mulOp(matrixData[i], vecData[i]) : vecData[i];
+		{
+      #pragma unroll
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+        //if( threadIdx.x==0 ) printf("%d,%d,%d\n", i, j, i*MGPU_TB+j);
+        stridedData[i*MGPU_TB+j] = LoadLeft ? 
+          mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
+      }
+    }
 
 		// Transpose from strided to thread order.
 		if(HalfCapacity)
-			HalfSmemTranspose<NT, VT>(stridedData, tid, storage.data, data);
+			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
 		else {
-			DeviceRegToShared<NT, VT>(stridedData, tid, storage.data);
-			DeviceSharedToThread<VT>(storage.data, tid, data);
+      // Cannot unroll, because using smem resource sequentially
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data);
+			  DeviceSharedToThread<VT>(storage.data, tid, data+j*VT);
+      }
 		}
 	}
 
@@ -378,7 +399,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	SegReduceRange range;
 	SegReduceTerms terms;
 	int rows[VT + 1], rowStarts[VT];
-	T data[VT];
+	T data[VT*MGPU_TB];
 
 	if(Indirect) {
 		// Transform the row limits into ranges.
@@ -400,8 +421,9 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	} else {
 		// This is a direct load so we don't have a data-dependency on the
 		// limits.
-		SpmvLoad::LoadDirectSpmm(count2, tid, gid, matrix_global, cols_global,
-			vec_global, identity, mulOp, data, shared.spmvLoadStorage, B_ncols);
+		SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
+      matrix_global, cols_global, vec_global, 
+      identity, mulOp, data, shared.spmvLoadStorage);
 
 		// Transform the row limits into ranges.
 		range = DeviceShiftRange(limit0, limit1);
@@ -418,7 +440,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
 	// Reduce tile data and store to dest_global. Write tile's carry-out
 	// term to carryOut_global.
-	SegReduce::ReduceToGlobal(rows, range.total, terms.tidDelta, 
+	SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
 		range.begin, block, tid, data, dest_global, carryOut_global,
 		identity, addOp, shared.segReduceStorage);
 }
@@ -475,7 +497,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		numRows, numRows2_global, numBlocks + 1, context);
 		
 	// Evaluate the Spmv product.
-	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
+	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_TB);
 	KernelSpmmCsr<Tuning, Indirect, LoadLeft>
 		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
 		cols_global, nz, csr_global, sources_global, vec_global, 
