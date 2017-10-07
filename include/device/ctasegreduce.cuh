@@ -37,8 +37,7 @@
 #include "ctasegscan.cuh"
 #include "ctasearch.cuh"
 
-#define MGPU_TB 4
-#define MGPU_BC 64
+#include "../constants.h"
 
 namespace mgpu {
 
@@ -246,14 +245,17 @@ struct CTASegReduce {
 		// Run a segmented scan within the thread.
 		T x[MGPU_TB], localScan[VT*MGPU_TB];
     #pragma unroll
-    for( int j=0; j<MGPU_TB; j++ )
-    {
+    for(int i = 0; i < VT; ++i) {
       #pragma unroll
-      for(int i = 0; i < VT; ++i) {
-        x[j] = i ? op(x[j], data[i*MGPU_TB+j]) : data[i*MGPU_TB+j];
-        localScan[i*MGPU_TB+j] = x[j];
-        if(rows[i] != rows[i + 1]) x[j] = identity;
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+        x[j] = i ? op(x[j], data[i+j*VT]) : data[i+j*VT];
+        localScan[i+j*VT] = x[j];
       }
+      if(rows[i] != rows[i + 1]) 
+        #pragma unroll
+        for( int j=0; j<MGPU_TB; j++ )
+          x[j] = identity;
     }
 
 		// Run a parallel segmented scan over the carry-out values to compute
@@ -280,7 +282,7 @@ struct CTASegReduce {
 				// Add the carry-in to the local scan.
         #pragma unroll
         for( int j=0; j<MGPU_TB; j++ )
-          x2[j] = op(carryIn[j], localScan[i*MGPU_TB+j]);
+          x2[j] = op(carryIn[j], localScan[i+j*VT]);
 
 				// Store on the end flag and clear the carry-in.
 				if(rows[i] != rows[i + 1]) {

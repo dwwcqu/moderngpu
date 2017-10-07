@@ -38,8 +38,7 @@
 #include "../kernels/segreduce.cuh"
 #include "../kernels/bulkinsert.cuh"
 
-#define MGPU_TB 4
-#define MGPU_BC 64
+#include "../constants.h"
 
 namespace mgpu {
 
@@ -197,9 +196,12 @@ struct CTASpmvLoad {
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
       {
-        //if( threadIdx.x==0 ) printf("%d,%d,%d\n", i, j, i*MGPU_TB+j);
-        stridedData[i*MGPU_TB+j] = LoadLeft ? 
+        stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
+        //stridedData[i*MGPU_TB+j] = LoadLeft ? 
+        //  mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
+        //if( stridedData[i*MGPU_TB+j]!=0.f )
+        //  printf("%d,%d,%d,%d:%f\n", tid, i,j,columns[i]*MGPU_BC+j, stridedData[i*MGPU_TB+j]);
       }
     }
 
@@ -497,7 +499,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		numRows, numRows2_global, numBlocks + 1, context);
 		
 	// Evaluate the Spmv product.
-	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_TB);
+	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
 	KernelSpmmCsr<Tuning, Indirect, LoadLeft>
 		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
 		cols_global, nz, csr_global, sources_global, vec_global, 

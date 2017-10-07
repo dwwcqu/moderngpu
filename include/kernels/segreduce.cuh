@@ -36,6 +36,8 @@
 
 #include "../kernels/csrtools.cuh"
 
+#include "../constants.h"
+
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -116,16 +118,27 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
 	int row2 = (gid + 1 < count) ? 
 		(0x7fffffff & limits_global[gid + 1]) :
 		INT_MAX;
-	
-	T carryIn2 = (gid < count) ? carryIn_global[gid] : identity;
-	T dest = (gid < count) ? dest_global[row] : identity;
+
+  // Depending on register usage, could consider changing MGPU_TB 
+  // here to MGPU_BC
+	T carryIn2[MGPU_TB];
+	T dest[    MGPU_TB];
+  #pragma unroll
+  for( int j=0; j<MGPU_TB; j++ )
+  {	
+    carryIn2[j] = (gid < count) ? carryIn_global[gid+j*MGPU_BC] : identity;
+    dest[j]     = (gid < count) ? dest_global[row*MGPU_BC+j] : identity;
+  }
 
 	// Run a segmented scan of the carry-in values.
 	bool endFlag = row != row2;
 
-	T carryOut;
-	T x = SegScan::SegScan(tid, carryIn2, endFlag, shared.segScanStorage,
-		&carryOut, identity, op);
+	T carryOut[MGPU_TB];
+	T x[       MGPU_TB];
+  #pragma unroll
+  for( int j=0; j<MGPU_TB; j++ )
+    x[j] = SegScan::SegScan(tid, carryIn2[j], endFlag, 
+      shared.segScanStorage, &carryOut[j], identity, op);
 			
 	// Store the reduction at the end of a segment to dest_global.
 	if(endFlag)
