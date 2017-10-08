@@ -123,34 +123,40 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
   // here to MGPU_BC
 	T carryIn2[MGPU_TB];
 	T dest[    MGPU_TB];
-  #pragma unroll
-  for( int j=0; j<MGPU_TB; j++ )
-  {	
-    carryIn2[j] = (gid < count) ? carryIn_global[block+j*gridDim.x] : identity;
-    dest[j]     = (gid < count) ? dest_global[row*MGPU_BC+j] : identity;
-  }
 
 	// Run a segmented scan of the carry-in values.
 	bool endFlag = row != row2;
 
 	T carryOut[MGPU_TB];
 	T x[       MGPU_TB];
-  #pragma unroll
-  for( int j=0; j<MGPU_TB; j++ )
-    x[j] = SegScan::SegScan(tid, carryIn2[j], endFlag, 
-      shared.segScanStorage, &carryOut[j], identity, op);
-			
-	// Store the reduction at the end of a segment to dest_global.
-	if(endFlag)
+
+  for( int slab=0; slab<MGPU_BC/MGPU_TB; slab++ )
+  {
     #pragma unroll
     for( int j=0; j<MGPU_TB; j++ )
-      dest_global[row*MGPU_BC+j] = op(x[j], dest[j]);
-	
-	// Store the CTA carry-out.
-	if(!tid)
+    {	
+      carryIn2[j] = (gid < count) ? 
+          carryIn_global[block+j*gridDim.x+slab*gridDim.x] : identity;
+      dest[j]     = (gid < count) ? dest_global[row*MGPU_BC+j+slab] : identity;
+    }
+
     #pragma unroll
     for( int j=0; j<MGPU_TB; j++ )
-      carryOut_global[block+j*gridDim.x] = carryOut[j];
+      x[j] = SegScan::SegScan(tid, carryIn2[j], endFlag, 
+        shared.segScanStorage, &carryOut[j], identity, op);
+        
+    // Store the reduction at the end of a segment to dest_global.
+    if(endFlag)
+      #pragma unroll
+      for( int j=0; j<MGPU_TB; j++ )
+        dest_global[row*MGPU_BC+j+slab] = op(x[j], dest[j]);
+    
+    // Store the CTA carry-out.
+    if(!tid)
+      #pragma unroll
+      for( int j=0; j<MGPU_TB; j++ )
+        carryOut_global[block+j*gridDim.x+slab*gridDim.x] = carryOut[j];
+  }
 }
 
 template<int NT, typename T, typename DestIt, typename Op>
