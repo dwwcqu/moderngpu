@@ -404,48 +404,35 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	int rows[VT + 1], rowStarts[VT];
 	T data[VT*MGPU_TB];
 
-	if(Indirect) {
-		// Transform the row limits into ranges.
-		range = DeviceShiftRange(limit0, limit1);
-		int numRows = range.end - range.begin;
+  // Transform the row limits into ranges.
+  range = DeviceShiftRange(limit0, limit1);
+  int numRows = range.end - range.begin;
 
-		// Load the CSR interval.
-		DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
-			shared.csr);
+  // Load the CSR interval.
+  DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+    shared.csr);
 
-		// Flatten CSR->COO and return the segmented scan terms.
-		terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid, 
-			range.flushLast, rows, rowStarts);
+  // Flatten CSR->COO and return the segmented scan terms.
+  terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
+    range.flushLast, rows, rowStarts);
 
-		// Load tile of data in thread order from row IDs.
-		SpmvLoad::LoadIndirect(count2, tid, gid, numRows, range.begin, rows, 
-			rowStarts, sources_global, matrix_global, cols_global, vec_global,
-			identity, mulOp, data, shared.spmvLoadStorage);
-	} else {
-		// This is a direct load so we don't have a data-dependency on the
-		// limits.
-		SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
-      matrix_global, cols_global, vec_global, 
+  for( int slab=0; slab<MGPU_BC/MGPU_TB; slab++ )
+  //for( int slab=0; slab<1; slab++ )
+  {
+    // Removed Indirect load case
+    // This is a direct load so we don't have a data-dependency on the
+    // limits.
+    SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
+      matrix_global, cols_global, vec_global+slab*MGPU_TB, 
       identity, mulOp, data, shared.spmvLoadStorage);
 
-		// Transform the row limits into ranges.
-		range = DeviceShiftRange(limit0, limit1);
-		int numRows = range.end - range.begin;
-
-		// Load the CSR interval.
-		DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
-			shared.csr);
-
-		// Flatten CSR->COO and return the segmented scan terms.
-		terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
-			range.flushLast, rows, rowStarts);
-	}
-
-	// Reduce tile data and store to dest_global. Write tile's carry-out
-	// term to carryOut_global.
-	SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
-		range.begin, block, tid, data, dest_global, carryOut_global,
-		identity, addOp, shared.segReduceStorage);
+  // Reduce tile data and store to dest_global. Write tile's carry-out
+    // term to carryOut_global.
+    SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
+		  range.begin, block, tid, data, dest_global+slab*MGPU_TB, 
+      carryOut_global+slab*gridDim.x,
+		  identity, addOp, shared.segReduceStorage);
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -546,8 +533,8 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   printDense(numRows, B_ncols, dest_global);
 
 	// Add the carry-in values.
-	//SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
-	//	carryOutDevice->get(), identity, addOp, context);
+	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
+		carryOutDevice->get(), identity, addOp, context);
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
