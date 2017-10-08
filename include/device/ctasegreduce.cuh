@@ -291,6 +291,7 @@ struct CTASegReduce {
           {
 					  carryIn[j] = identity;
 					  dest_global[rows[i]*MGPU_BC+j] = x2[j];
+            printf("%d,%d,%d,%d:%f\n", tid, i, rows[i],  j,x2[j]);
           }
 				}
 			}

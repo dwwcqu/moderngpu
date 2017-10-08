@@ -196,12 +196,13 @@ struct CTASpmvLoad {
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
       {
+        //if( !tid ) printf("%d,%d\n", i, j);
         stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
         //stridedData[i*MGPU_TB+j] = LoadLeft ? 
         //  mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //if( stridedData[i*MGPU_TB+j]!=0.f )
-        //  printf("%d,%d,%d,%d:%f\n", tid, i,j,columns[i]*MGPU_BC+j, stridedData[i*MGPU_TB+j]);
+        //if( stridedData[i+j*VT]!=0.f )
+        //  printf("%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, stridedData[i+j*VT]); 
       }
     }
 
@@ -481,6 +482,41 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		carryOutDevice->get(), identity, addOp, context);
 }
 
+template<typename DestIt>
+void printDense(const int nrows, const int ncols, DestIt array)
+{
+  int row_length=std::min(20,11);
+  //int row_length=std::min(20,nrows);
+  int col_length=std::min(20,ncols);
+
+  std::cout << row_length << " " << col_length << std::endl;
+
+  // Allocate array on host
+  int nvals=nrows*MGPU_BC;
+  float* temp = (float*) malloc(nvals*sizeof(float));
+  CUDA( cudaMemcpy( temp, array, nvals*sizeof(float), 
+      cudaMemcpyDeviceToHost ));
+
+  // Print out all dense values
+  std::cout << "dest_global:\n";
+  for( int i=0;i<min(40,nvals);i++ )
+    std::cout << "[" << i << "]:" << temp[i] << " ";
+  std::cout << "\n";
+
+  // Print in matrix format
+  for( int row=0; row<row_length; row++ ) {
+    for( int col=0; col<col_length; col++ ) {
+      // Print row major order matrix in row major order
+      if( temp[row*MGPU_BC+col]!=0.0 ) std::cout << "x ";
+      else std::cout << "0 ";
+    }
+    std::cout << std::endl;
+  }
+
+  // Cleanup
+  if( temp ) free( temp );
+}
+
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
 	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
 	typename DestIt, typename T, typename MulOp, typename AddOp>
@@ -507,9 +543,11 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		mulOp, addOp, B_ncols);
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
+  printDense(numRows, B_ncols, dest_global);
+
 	// Add the carry-in values.
-	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
-		carryOutDevice->get(), identity, addOp, context);
+	//SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
+	//	carryOutDevice->get(), identity, addOp, context);
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,

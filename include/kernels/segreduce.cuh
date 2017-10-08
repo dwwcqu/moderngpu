@@ -126,7 +126,7 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
   #pragma unroll
   for( int j=0; j<MGPU_TB; j++ )
   {	
-    carryIn2[j] = (gid < count) ? carryIn_global[gid+j*MGPU_BC] : identity;
+    carryIn2[j] = (gid < count) ? carryIn_global[block+j*gridDim.x] : identity;
     dest[j]     = (gid < count) ? dest_global[row*MGPU_BC+j] : identity;
   }
 
@@ -142,10 +142,15 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
 			
 	// Store the reduction at the end of a segment to dest_global.
 	if(endFlag)
-		dest_global[row] = op(x, dest);
+    #pragma unroll
+    for( int j=0; j<MGPU_TB; j++ )
+      dest_global[row*MGPU_BC+j] = op(x[j], dest[j]);
 	
 	// Store the CTA carry-out.
-	if(!tid) carryOut_global[block] = carryOut;
+	if(!tid)
+    #pragma unroll
+    for( int j=0; j<MGPU_TB; j++ )
+      carryOut_global[block+j*gridDim.x] = carryOut[j];
 }
 
 template<int NT, typename T, typename DestIt, typename Op>
