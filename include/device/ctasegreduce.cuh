@@ -245,7 +245,8 @@ struct CTASegReduce {
 		// Run a segmented scan within the thread.
 		T x[MGPU_TB], localScan[VT*MGPU_TB];
     #pragma unroll
-    for(int i = 0; i < VT; ++i) {
+    for(int i = 0; i < VT; ++i)
+    {
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
       {
@@ -257,6 +258,26 @@ struct CTASegReduce {
         for( int j=0; j<MGPU_TB; j++ )
           x[j] = identity;
     }
+    /*if( tid==1 )//|| tid==1 )
+    {
+      printf("data %d:\n", tid);
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+        for( int i=0; i<VT; i++ )
+          printf("%f ", data[i+j*VT]);
+        printf("\n");
+      }
+    }
+    if( tid==1 )//|| tid==1 )
+    {
+      printf("localScan %d:\n", tid);
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+        for( int i=0; i<VT; i++ )
+          printf("%f ", localScan[i+j*VT]);
+        printf("\n");
+      }
+    }*/
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
@@ -268,11 +289,19 @@ struct CTASegReduce {
 
 		// Store the carry-out for the entire CTA to global memory.
 		if(!tid)
+    {
       #pragma unroll 
       for( int j=0; j<MGPU_TB; j++ )
+      {
         carryOut_global[block+j*gridDim.x] = carryOut[j];
-		
-		dest_global += startRow;
+        //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
+      }
+		}
+
+		dest_global += startRow*MGPU_BC;
+
+    // TODO: Implement shared memory write out to global
+    //      -else() part of this statement
 		//if(HalfCapacity && total > Capacity) {
 			// Add carry-in to each thread-local scan value. Store directly
 			// to global.
@@ -285,13 +314,15 @@ struct CTASegReduce {
           x2[j] = op(carryIn[j], localScan[i+j*VT]);
 
 				// Store on the end flag and clear the carry-in.
+        //if( tid==1 ) printf("%d = %d\n", rows[i], rows[i+1]);
 				if(rows[i] != rows[i + 1]) {
           #pragma unroll
           for( int j=0; j<MGPU_TB; j++ )
           {
 					  carryIn[j] = identity;
 					  dest_global[rows[i]*MGPU_BC+j] = x2[j];
-            //printf("%d,%d,%d,%d:%f\n", tid, i, rows[i],  j,x2[j]);
+            //if( tid==1 )//x2[j]>0.f )
+            //  printf("cta %d,%d,%d,%d,%d:%f\n", tid, i, j, rows[i],rows[i+1],x2[j]);
           }
 				}
 			}

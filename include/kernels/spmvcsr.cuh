@@ -202,7 +202,7 @@ struct CTASpmvLoad {
         //stridedData[i*MGPU_TB+j] = LoadLeft ? 
         //  mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
         //if( stridedData[i+j*VT]!=0.f )
-        //  printf("%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, stridedData[i+j*VT]); 
+        //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
     }
 
@@ -430,7 +430,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     // term to carryOut_global.
     SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
 		  range.begin, block, tid, data, dest_global+slab*MGPU_TB, 
-      carryOut_global+slab*gridDim.x,
+      carryOut_global+slab*MGPU_TB*gridDim.x,
 		  identity, addOp, shared.segReduceStorage);
   }
 }
@@ -472,14 +472,14 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 template<typename DestIt>
 void printDense(const int nrows, const int ncols, DestIt array)
 {
-  int row_length=std::min(20,11);
+  int row_length=std::min(20,nrows);
   //int row_length=std::min(20,nrows);
   int col_length=std::min(20,ncols);
 
   std::cout << row_length << " " << col_length << std::endl;
 
   // Allocate array on host
-  int nvals=nrows*MGPU_BC;
+  int nvals=nrows*ncols;
   float* temp = (float*) malloc(nvals*sizeof(float));
   CUDA( cudaMemcpy( temp, array, nvals*sizeof(float), 
       cudaMemcpyDeviceToHost ));
@@ -494,7 +494,7 @@ void printDense(const int nrows, const int ncols, DestIt array)
   for( int row=0; row<row_length; row++ ) {
     for( int col=0; col<col_length; col++ ) {
       // Print row major order matrix in row major order
-      if( temp[row*MGPU_BC+col]!=0.0 ) std::cout << "x ";
+      if( temp[row*ncols+col]!=0.0 ) std::cout << "x ";
       else std::cout << "0 ";
     }
     std::cout << std::endl;
@@ -531,6 +531,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
   printDense(numRows, B_ncols, dest_global);
+  printDense(B_ncols, numBlocks, carryOutDevice->get());
 
 	// Add the carry-in values.
 	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
