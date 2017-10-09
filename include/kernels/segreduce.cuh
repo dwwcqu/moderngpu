@@ -136,16 +136,13 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
     for( int j=0; j<MGPU_TB; j++ )
     {	
       carryIn2[j] = (gid < count) ? 
-          carryIn_global[block+j*gridDim.x+slab*MGPU_TB*gridDim.x] : identity;
+        carryIn_global[block+j*gridDim.x+slab*MGPU_TB*gridDim.x] : identity;
       dest[j]     = (gid < count) ? 
-          dest_global[row*MGPU_BC+j+slab*MGPU_TB] : identity;
-    }
-
-    #pragma unroll
-    for( int j=0; j<MGPU_TB; j++ )
+        dest_global[row*MGPU_BC+j+slab*MGPU_TB] : identity;
       x[j] = SegScan::SegScan(tid, carryIn2[j], endFlag, 
         shared.segScanStorage, &carryOut[j], identity, op);
-        
+    }
+
     // Store the reduction at the end of a segment to dest_global.
     if(endFlag)
       #pragma unroll
@@ -169,7 +166,7 @@ __global__ void KernelSegReduceSpine2(const int* limits_global, int numBlocks,
 	struct Shared {
 		typename SegScan::Storage segScanStorage;
 		int carryInRow;
-		T carryIn;
+		T   carryIn[   MGPU_TB];
 	};
 	__shared__ Shared shared;
 
@@ -183,43 +180,65 @@ __global__ void KernelSegReduceSpine2(const int* limits_global, int numBlocks,
 			(0x7fffffff & limits_global[gid]) : INT_MAX;
 		int row2 = (gid + nv < count) ? 
 			(0x7fffffff & limits_global[gid + nv]) : INT_MAX;
-		T carryIn2 = (i + tid < numBlocks) ? carryIn_global[i + tid] : identity;
-		T dest = (gid < count) ? dest_global[row] : identity;
+		T carryIn2[MGPU_TB], dest[MGPU_TB];
+		T carryOut[MGPU_TB], x[MGPU_TB];
 
 		// Run a segmented scan of the carry-in values.
 		bool endFlag = row != row2;
-		
-		T carryOut;
-		T x = SegScan::SegScan(tid, carryIn2, endFlag, shared.segScanStorage,
-			&carryOut, identity, op);
 
-		// Add the carry-in to the reductions when we get to the end of a segment.
-		if(endFlag) {
-			// Add the carry-in from the last loop iteration to the carry-in
-			// from this loop iteration.
-			if(i && row == shared.carryInRow) 
-				x = op(shared.carryIn, x);
-			dest_global[row] = op(x, dest);
-		}
+    for( int slab=0; slab<MGPU_BC/MGPU_TB; slab++ )
+    {
+      #pragma unroll
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+        carryIn2[j] = (i + tid < numBlocks) ? 
+          carryIn_global[i+tid+j*gridDim.x+slab*MGPU_TB*gridDim.x]:identity;
+        dest[j] = (gid < count) ? 
+          dest_global[row*MGPU_BC+j+slab*MGPU_TB] : identity;
+        x[j] = SegScan::SegScan(tid, carryIn2[j], endFlag, 
+          shared.segScanStorage,&carryOut[j], identity, op);
+      }
 
-		// Set the carry-in for the next loop iteration.
-		if(i + NT < numBlocks) {
-			__syncthreads();
-			if(i > 0) {
-				// Add in the previous carry-in.
-				if(NT - 1 == tid) {
-					shared.carryIn = (shared.carryInRow == row2) ?
-						op(shared.carryIn, carryOut) : carryOut;
-					shared.carryInRow = row2;
-				}
-			} else {
-				if(NT - 1 == tid) {
-					shared.carryIn = carryOut;
-					shared.carryInRow = row2;
-				}
-			}
-			__syncthreads();
-		}
+      // Add the carry-in to the reductions when we get to the end of a segment.
+      if(endFlag) {
+        // Add the carry-in from the last loop iteration to the carry-in
+        // from this loop iteration.
+        #pragma unroll
+        for( int j=0; j<MGPU_TB; j++ )
+        {
+          if(i && row == shared.carryInRow) 
+            x[j] = op(shared.carryIn[j], x[j]);
+          dest_global[row*MGPU_BC+j+slab*MGPU_TB] = op(x[j], dest[j]);
+        }
+      }
+
+      // Set the carry-in for the next loop iteration.
+      if(i + NT < numBlocks) {
+        __syncthreads();
+        if(i > 0) {
+          // Add in the previous carry-in.
+          if(NT - 1 == tid) {
+            #pragma unroll
+            for( int j=0; j<MGPU_TB; j++ )
+            {
+              shared.carryIn[j] = (shared.carryInRow == row2) ?
+                op(shared.carryIn[j], carryOut[j]) : carryOut[j];
+              shared.carryInRow = row2;
+            }
+          }
+        } else {
+          if(NT - 1 == tid) {
+            #pragma unroll
+            for( int j=0; j<MGPU_TB; j++ )
+            {
+              shared.carryIn[j] = carryOut[j];
+              shared.carryInRow = row2;
+            }
+          }
+        }
+        __syncthreads();
+      }
+    }
 	}
 }
 

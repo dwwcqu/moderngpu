@@ -408,6 +408,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   range = DeviceShiftRange(limit0, limit1);
   int numRows = range.end - range.begin;
 
+  if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
+
   // Load the CSR interval.
   DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
     shared.csr);
@@ -530,12 +532,13 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		mulOp, addOp, B_ncols);
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
+  PrintArray(*limitsDevice, "%4d", 10);
   printDense(numRows, B_ncols, dest_global);
   printDense(B_ncols, numBlocks, carryOutDevice->get());
 
 	// Add the carry-in values.
-	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
-		carryOutDevice->get(), identity, addOp, context);
+	//SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
+	//	carryOutDevice->get(), identity, addOp, context);
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
