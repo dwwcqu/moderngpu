@@ -169,7 +169,8 @@ struct CTASegReduce {
 
 	union Storage {
 		typename SegScan::Storage segScanStorage;
-		T values[Capacity*MGPU_TB];
+		T values[Capacity];
+		//T values[Capacity*MGPU_TB];
 	};
 	
 	template<typename DestIt>
