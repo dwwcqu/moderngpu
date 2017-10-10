@@ -199,9 +199,7 @@ struct CTASpmvLoad {
         //if( !tid ) printf("%d,%d\n", i, j);
         stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //stridedData[i*MGPU_TB+j] = LoadLeft ? 
-        //  mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //if( stridedData[i+j*VT]!=0.f )
+        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
         //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
     }
