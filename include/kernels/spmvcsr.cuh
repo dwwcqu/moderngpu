@@ -166,7 +166,7 @@ struct CTASpmvLoad {
 				tid, matrixData, identity);
 		
 		// Use ldg to load vector data in strided order.
-		T vecData[VT*MGPU_TB];
+		T      vecData[VT*MGPU_TB];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
 		{
@@ -219,6 +219,87 @@ struct CTASpmvLoad {
 		}
 	}
 
+	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
+	MGPU_DEVICE static void LoadDirectSpmmVector(int count2, int tid, int gid, 
+		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
+		T identity, MulOp mulOp, T data[VT*MGPU_TB], Storage& storage) {
+
+		// Load column indices directly from cols_global.
+		int columns[VT];
+		DeviceGlobalToRegDefault<NT, VT>(count2, cols_global + gid, tid,
+			columns, 0);
+
+		// Load values into stridedData.
+		T matrixData[VT];
+		if(LoadLeft)
+			DeviceGlobalToRegDefault<NT, VT>(count2, matrix_global + gid,
+				tid, matrixData, identity);
+		
+		// Use ldg to load vector data in strided order.
+    float4 rawData[VT*(MGPU_TB>>2)];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+		{
+      #pragma unroll
+      for( int j=0; j<MGPU_TB>>2; j++ )
+        rawData[i*(MGPU_TB>>2)+j] = ldg((float4*)(vec_global+columns[i]*MGPU_BC+
+            j*4));
+    }
+
+		// Clear out the out-of-range inputs. 
+		if(count2 < NV)
+    {
+			#pragma unroll
+			for(int i = 0; i < VT; ++i)
+				if(NT * i + tid >= count2)
+				{
+        	#pragma unroll
+          for( int j=0; j<MGPU_TB>>2; j++ )
+          {
+            rawData[i*(MGPU_TB>>2)+j].x = identity;
+            rawData[i*(MGPU_TB>>2)+j].y = identity;
+            rawData[i*(MGPU_TB>>2)+j].z = identity;
+            rawData[i*(MGPU_TB>>2)+j].w = identity;
+          }
+        }
+		}	
+
+		// Multiply matrix and vector values together.
+		T stridedData[VT*MGPU_TB];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+		{
+      #pragma unroll
+      for( int j=0; j<MGPU_TB>>2; j++ )
+      {
+        //if( !tid ) printf("%d,%d\n", i, j);
+        stridedData[i+j*4*VT  ] = LoadLeft ? 
+          mulOp(matrixData[i], rawData[i*(MGPU_TB>>2)+j].x) : rawData[i*(MGPU_TB>>2)+j].x;
+        stridedData[i+j*4*VT+1*VT] = LoadLeft ? 
+          mulOp(matrixData[i], rawData[i*(MGPU_TB>>2)+j].y) : rawData[i*(MGPU_TB>>2)+j].y;
+        stridedData[i+j*4*VT+2*VT] = LoadLeft ? 
+          mulOp(matrixData[i], rawData[i*(MGPU_TB>>2)+j].z) : rawData[i*(MGPU_TB>>2)+j].z;
+        stridedData[i+j*4*VT+3*VT] = LoadLeft ? 
+          mulOp(matrixData[i], rawData[i*(MGPU_TB>>2)+j].w) : rawData[i*(MGPU_TB>>2)+j].w;
+        //stridedData[i*MGPU_TB+j] = LoadLeft ? 
+        //  mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
+        //if( stridedData[i+j*VT]!=0.f )
+        //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
+      }
+    }
+
+		// Transpose from strided to thread order.
+		if(HalfCapacity)
+			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
+		else {
+      // Cannot unroll, because using smem resource sequentially
+      for( int j=0; j<MGPU_TB; j++ )
+      {
+			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data);
+			  DeviceSharedToThread<VT>(storage.data, tid, data+j*VT);
+      }
+		}
+	}
 	template<typename SourcesIt, typename MatrixIt, typename ColumnsIt,
 		typename VecIt>
 	MGPU_DEVICE static void LoadIndirect(int count2, int tid, int gid, 
@@ -424,7 +505,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     // Removed Indirect load case
     // This is a direct load so we don't have a data-dependency on the
     // limits.
-    SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
+    SpmvLoad::LoadDirectSpmmVector(count2, tid, gid, 
       matrix_global, cols_global, vec_global+slab*MGPU_TB, 
       identity, mulOp, data, shared.spmvLoadStorage);
 
