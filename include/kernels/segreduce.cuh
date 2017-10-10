@@ -267,6 +267,30 @@ MGPU_HOST void SegReduceSpine(const int* limits_global, int count,
 	}
 }
 
+template<typename T, typename Op, typename DestIt>
+MGPU_HOST void SegReduceSpinePrealloc(const int* limits_global, int count, 
+	DestIt dest_global, const T* carryIn_global, T* carryOut_global, T identity, 
+  Op op, CudaContext& context) {
+
+	const int NT = 128;
+	int numBlocks = MGPU_DIV_UP(count, NT);
+
+	// Fix-up the segment outputs between the original tiles.
+	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
+	KernelSegReduceSpine1<NT><<<numBlocks, NT, 0, context.Stream()>>>(
+		limits_global, count, dest_global, carryIn_global, identity, op,
+		carryOut_global);
+	MGPU_SYNC_CHECK("KernelSegReduceSpine1");
+
+	// Loop over the segments that span the tiles of 
+	// KernelSegReduceSpine1 and fix those.
+	if(numBlocks > 1) {
+		KernelSegReduceSpine2<NT><<<1, NT, 0, context.Stream()>>>(
+			limits_global, numBlocks, count, NT, dest_global,
+			carryOut_global, identity, op);
+		MGPU_SYNC_CHECK("KernelSegReduceSpine2");
+	}
+}
 ////////////////////////////////////////////////////////////////////////////////
 // Common LaunchBox structure for segmented reductions.
 

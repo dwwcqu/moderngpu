@@ -85,6 +85,22 @@ MGPU_HOST MGPU_MEM(int) PartitionCsrSegReduce(int count, int nv,
 	return limitsDevice;
 }
 
+template<typename CsrIt, typename DestIt>
+MGPU_HOST void PartitionCsrSegReducePrealloc(int count, int nv,
+	CsrIt csr_global, int numRows, const int* numRows2, int numPartitions, 
+	DestIt limits_global, CudaContext& context) {
+
+	// Allocate one int per partition.
+	//MGPU_MEM(int) limitsDevice = context.Malloc<int>(numPartitions);
+
+	int numBlocks2 = MGPU_DIV_UP(numPartitions, 64);
+	KernelPartitionCsrSegReduce<64><<<numBlocks2, 64, 0, context.Stream()>>>(
+		count, nv, csr_global, numRows, numRows2, numPartitions,
+		limits_global);
+	MGPU_SYNC_CHECK("KernelPartitionCsrSegReduce");
+
+	//return limitsDevice;
+}
 ////////////////////////////////////////////////////////////////////////////////
 // KernelBuildCsrPlus
 

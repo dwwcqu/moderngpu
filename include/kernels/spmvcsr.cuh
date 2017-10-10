@@ -58,7 +58,7 @@ struct SpmmTuningNormal {
 	typedef LaunchBox<
 		SegReduceTuning<128, 11, 0, false, false>,
 		SegReduceTuning<128, 11, 0, true, false>,
-		SegReduceTuning<128, 8, 0, true, false>
+		SegReduceTuning<MGPU_NT, MGPU_VT, 0, true, false>
 	> Tuning;
 };
 
@@ -370,7 +370,7 @@ template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
 	typename DestIt, typename T, typename MulOp, typename AddOp>
 MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	ColsIt cols_global, int nz, CsrIt csr_global, SourcesIt sources_global, 
-	VecIt vec_global, const int* limits_global, DestIt dest_global,
+	VecIt vec_global, CsrIt limits_global, DestIt dest_global,
 	T* carryOut_global, T identity, MulOp mulOp, AddOp addOp, const int B_ncols) {
 
 	typedef MGPU_LAUNCH_PARAMS Params;
@@ -408,7 +408,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   range = DeviceShiftRange(limit0, limit1);
   int numRows = range.end - range.begin;
 
-  if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
+  //if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
 
   // Load the CSR interval.
   DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
@@ -507,12 +507,13 @@ void printDense(const int nrows, const int ncols, DestIt array)
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
-	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
-	typename DestIt, typename T, typename MulOp, typename AddOp>
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
+  typename LimIt, typename DestIt, typename T, typename MulOp, typename AddOp>
 MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	CsrIt csr_global, SourcesIt sources_global, int numRows, 
 	const int* numRows2_global, VecIt vec_global, DestIt dest_global,
-	T identity, MulOp mulOp, AddOp addOp, const int B_ncols, CudaContext& context) {
+	T identity, MulOp mulOp, AddOp addOp, const int B_ncols, LimIt limits_global,
+  DestIt carryin_global, DestIt carryout_global, CudaContext& context) {
 
 	int2 launch = Tuning::GetLaunchParams(context);
 	int NV = launch.x * launch.y;
@@ -520,25 +521,25 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	int numBlocks = MGPU_DIV_UP(nz, NV);
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.
-	MGPU_MEM(int) limitsDevice = PartitionCsrSegReduce(nz, NV, csr_global,
-		numRows, numRows2_global, numBlocks + 1, context);
+	PartitionCsrSegReducePrealloc(nz, NV, csr_global, numRows, numRows2_global, 
+      numBlocks + 1, limits_global, context);
 		
 	// Evaluate the Spmv product.
-	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
+	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
 	KernelSpmmCsr<Tuning, Indirect, LoadLeft>
 		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
 		cols_global, nz, csr_global, sources_global, vec_global, 
-		limitsDevice->get(), dest_global, carryOutDevice->get(), identity, 
+		limits_global, dest_global, carryin_global, identity, 
 		mulOp, addOp, B_ncols);
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
-  PrintArray(*limitsDevice, "%4d", 10);
-  printDense(numRows, B_ncols, dest_global);
-  printDense(B_ncols, numBlocks, carryOutDevice->get());
+  //PrintArray(*limitsDevice, "%4d", 10);
+  //printDense(numRows, B_ncols, dest_global);
+  //printDense(B_ncols, numBlocks, carryOutDevice->get());
 
 	// Add the carry-in values.
-	//SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
-	//	carryOutDevice->get(), identity, addOp, context);
+	//SegReduceSpinePrealloc(limits_global, numBlocks, dest_global,
+	//	carryin_global, carryout_global, identity, addOp, context);
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
@@ -547,7 +548,7 @@ template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
 MGPU_HOST void SpmvCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	CsrIt csr_global, SourcesIt sources_global, int numRows, VecIt vec_global,
 	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp,
-	CudaContext& context) {
+  CudaContext& context) {
 		
 	if(supportEmpty) {
 		// Allocate space for CSR2 and Sources2.
@@ -579,16 +580,18 @@ MGPU_HOST void SpmvCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
-	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
-	typename DestIt, typename T, typename MulOp, typename AddOp>
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
+  typename LimIt, typename DestIt, typename T, typename MulOp, typename AddOp>
 MGPU_HOST void SpmmCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	CsrIt csr_global, SourcesIt sources_global, int numRows, VecIt vec_global,
 	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp,
-	const int B_ncols, CudaContext& context) {
+	const int B_ncols, LimIt limits_global, DestIt carryin_global, 
+  DestIt carryout_global, CudaContext& context) {
 		
 	if(supportEmpty) {
+    std::cout << "Error: supportEmpty is not implemented\n";
 		// Allocate space for CSR2 and Sources2.
-		MGPU_MEM(int) csr2Device = context.Malloc<int>(numRows + 1);
+		/*MGPU_MEM(int) csr2Device = context.Malloc<int>(numRows + 1);
 		MGPU_MEM(int) sources2Device;
 		if(Indirect) sources2Device = context.Malloc<int>(numRows);
 
@@ -606,12 +609,13 @@ MGPU_HOST void SpmmCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		
 		// Transform into the CSR space with BulkInsert.
 		CsrBulkInsert(csr2Device->get(), numRows, destDevice->get(), identity,
-			dest_global, context);
+			dest_global, context);*/
 
 	} else {
 		SpmmCsrInner<Tuning, Indirect, LoadLeft>(matrix_global, cols_global, nz,
 			csr_global, sources_global, numRows, (const int*)0, vec_global, 
-			dest_global, identity, mulOp, addOp, B_ncols, context);
+			dest_global, identity, mulOp, addOp, B_ncols, limits_global, 
+      carryin_global, carryout_global, context);
 	}
 }
 
@@ -649,16 +653,18 @@ MGPU_HOST void SpmvCsrBinary(MatrixIt matrix_global, ColsIt cols_global, int nz,
 }
 
 template<typename MatrixIt, typename ColsIt, typename CsrIt, typename VecIt,
-	typename DestIt, typename T, typename MulOp, typename AddOp>
+	typename LimIt, typename DestIt, typename T, typename MulOp, typename AddOp>
 MGPU_HOST void SpmmCsrBinary(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	CsrIt csr_global, int numRows, VecIt vec_global, bool supportEmpty, 
 	DestIt dest_global, T identity, MulOp mulOp, AddOp addOp, const int B_ncols,
+  LimIt limits_global, DestIt carryin_global, DestIt carryout_global,
 	CudaContext& context) {
 			
 	typedef typename SpmmTuningNormal<sizeof(T), true>::Tuning Tuning;
 	SpmmCsrHost<Tuning, false, true>(matrix_global, cols_global, nz, csr_global,
 		(const int*)0, numRows, vec_global, supportEmpty, dest_global, 
-		identity, mulOp, addOp, B_ncols, context);
+		identity, mulOp, addOp, B_ncols, limits_global, carryin_global, 
+    carryout_global, context);
 }
 
 template<typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
