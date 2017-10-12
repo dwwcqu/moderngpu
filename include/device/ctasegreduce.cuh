@@ -259,7 +259,7 @@ struct CTASegReduce {
         for( int j=0; j<MGPU_TB; j++ )
           x[j] = identity;
     }
-    /*if( tid==1 )//|| tid==1 )
+    /*if( tid==0 && blockIdx.y==0)//|| tid==1 )
     {
       printf("data %d:\n", tid);
       for( int j=0; j<MGPU_TB; j++ )

@@ -9,7 +9,7 @@
  *       notice, this list of conditions and the following disclaimer in the
  *       documentation and/or other materials provided with the distribution.
  *     * Neither the name of the NVIDIA CORPORATION nor the
- *       names of its contributors may be used to endorse or promote products
+ B*       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
@@ -99,7 +99,7 @@ struct CTASpmvLoad {
 	
 	union Storage {
 		int sources[NV];
-		T data[Capacity*MGPU_BC/MGPU_TB];
+		T data[Capacity*MGPU_NT/MGPU_NTX];
 		//typename SegReduce::Storage segReduceStorage;
 	};
 
@@ -199,8 +199,8 @@ struct CTASpmvLoad {
         //if( !tid ) printf("%d,%d\n", i, j);
         stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
-          printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
+        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
+        //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
     }
 
@@ -492,8 +492,10 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   //if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
 
   // Load the CSR interval.
-  DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
-    shared.csr);
+  if( threadIdx.y==0 )
+    DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+      shared.csr);
+  __syncthreads();
 
   // Flatten CSR->COO and return the segmented scan terms.
   terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
@@ -597,14 +599,14 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   DestIt carryin_global, DestIt carryout_global, CudaContext& context) {
 
 	int2 launch = Tuning::GetLaunchParams(context);
-	int NV = launch.x * launch.y;
+	int NV = MGPU_NV;
 
   dim3 nt, nb;
-  nt.x = 32;
-  nt.y = MGPU_NT/32;
+  nt.x = MGPU_NTX;
+  nt.y = MGPU_NT/MGPU_NTX;
   nt.z = 1;
 	nb.x = MGPU_DIV_UP(nz, NV);
-  nb.y = MGPU_BC/MGPU_TB;
+  nb.y = MGPU_BC/MGPU_TB/nt.y;
   nb.z = 1;
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.
