@@ -35,6 +35,7 @@
 #pragma once
 
 #include "../device/ctascan.cuh"
+#include "../constants.h"
 
 namespace mgpu {
 
@@ -83,8 +84,8 @@ struct CTASegScan {
 	typedef typename Op::result_type T;
 	enum { NumWarps = NT / 32, Size = NT, Capacity = 2 * NT };
 	union Storage {
-		int delta[NumWarps];
-		T values[Capacity];
+    int delta[NumWarps];
+    T values[Capacity*2*MGPU_BC/MGPU_TB];
 	};
 
 	// Each thread passes the reduction of the LAST SEGMENT that it covers.
@@ -104,21 +105,22 @@ struct CTASegScan {
 
 		// Run an inclusive scan 
 		int first = 0;
-		storage.values[first + tid] = x;
+    const int tiy = threadIdx.y*2*NT;
+		storage.values[first + tid + tiy] = x;
 		__syncthreads();
 
 		#pragma unroll
 		for(int offset = 1; offset < NT; offset += offset) {
 			if(tidDelta >= offset) 
-				x = op(storage.values[first + tid - offset], x);
+				x = op(storage.values[first + tid - offset + tiy], x);
 			first = NT - first;
-			storage.values[first + tid] = x;
+			storage.values[first + tid + tiy] = x;
 			__syncthreads();
 		}
 
 		// Get the exclusive scan.
-		x = tid ? storage.values[first + tid - 1] : identity;
-		*carryOut = storage.values[first + NT - 1];
+		x = tid ? storage.values[first + tid - 1 + tiy] : identity;
+		*carryOut = storage.values[first + NT - 1 + tiy];
 		__syncthreads();
 		return x;
 	}

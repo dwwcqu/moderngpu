@@ -99,7 +99,7 @@ struct CTASpmvLoad {
 	
 	union Storage {
 		int sources[NV];
-		T data[Capacity];
+		T data[Capacity*MGPU_BC/MGPU_TB];
 		//typename SegReduce::Storage segReduceStorage;
 	};
 
@@ -199,11 +199,12 @@ struct CTASpmvLoad {
         //if( !tid ) printf("%d,%d\n", i, j);
         stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
-        //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
+        if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
+          printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
     }
 
+    const int tiy = threadIdx.y;
 		// Transpose from strided to thread order.
 		if(HalfCapacity)
 			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
@@ -211,8 +212,8 @@ struct CTASpmvLoad {
       // Cannot unroll, because using smem resource sequentially
       for( int j=0; j<MGPU_TB; j++ )
       {
-			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data);
-			  DeviceSharedToThread<VT>(storage.data, tid, data+j*VT);
+			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data+NV*tiy);
+			  DeviceSharedToThread<VT>(storage.data+NV*tiy, tid, data+j*VT);
       }
 		}
 	}
@@ -286,6 +287,7 @@ struct CTASpmvLoad {
       }
     }
 
+    const int tiy = threadIdx.y;
 		// Transpose from strided to thread order.
 		if(HalfCapacity)
 			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
@@ -293,8 +295,8 @@ struct CTASpmvLoad {
       // Cannot unroll, because using smem resource sequentially
       for( int j=0; j<MGPU_TB; j++ )
       {
-			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data);
-			  DeviceSharedToThread<VT>(storage.data, tid, data+j*VT);
+			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data+tiy*NV);
+			  DeviceSharedToThread<VT>(storage.data+tiy*NV, tid, data+j*VT);
       }
 		}
 	}
@@ -497,23 +499,23 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
     range.flushLast, rows, rowStarts);
 
-  for( int slab=0; slab<MGPU_BC/MGPU_TB; slab++ )
+  int tiy = threadIdx.y + blockIdx.y*blockDim.y;
   //for( int slab=0; slab<1; slab++ )
-  {
+  //{
     // Removed Indirect load case
     // This is a direct load so we don't have a data-dependency on the
     // limits.
-    SpmvLoad::LoadDirectSpmmVector(count2, tid, gid, 
-      matrix_global, cols_global, vec_global+slab*MGPU_TB, 
+    SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
+      matrix_global, cols_global, vec_global+tiy*MGPU_TB, 
       identity, mulOp, data, shared.spmvLoadStorage);
 
   // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.
     SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
-		  range.begin, block, tid, data, dest_global+slab*MGPU_TB, 
-      carryOut_global+slab*MGPU_TB*gridDim.x,
+		  range.begin, block, tid, data, dest_global+tiy*MGPU_TB, 
+      carryOut_global+tiy*MGPU_TB*gridDim.x,
 		  identity, addOp, shared.segReduceStorage);
-  }
+  //}
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -597,16 +599,22 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	int2 launch = Tuning::GetLaunchParams(context);
 	int NV = launch.x * launch.y;
 
-	int numBlocks = MGPU_DIV_UP(nz, NV);
+  dim3 nt, nb;
+  nt.x = 32;
+  nt.y = MGPU_NT/32;
+  nt.z = 1;
+	nb.x = MGPU_DIV_UP(nz, NV);
+  nb.y = MGPU_BC/MGPU_TB;
+  nb.z = 1;
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.
 	PartitionCsrSegReducePrealloc(nz, NV, csr_global, numRows, numRows2_global, 
-      numBlocks + 1, limits_global, context);
+      nb.x + 1, limits_global, context);
 		
 	// Evaluate the Spmv product.
 	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
 	KernelSpmmCsr<Tuning, Indirect, LoadLeft>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
+		<<<nb, nt, 0, context.Stream()>>>(matrix_global,
 		cols_global, nz, csr_global, sources_global, vec_global, 
 		limits_global, dest_global, carryin_global, identity, 
 		mulOp, addOp, B_ncols);
