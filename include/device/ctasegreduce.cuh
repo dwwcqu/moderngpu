@@ -249,7 +249,8 @@ struct CTASegReduce {
     T carryIn[MGPU_VT2];
     T x2[MGPU_VT2];
 		dest_global += startRow*MGPU_BC;
-    for( int j=0; j<MGPU_TB; j++ )
+    #pragma unroll
+    for( int j=0; j<MGPU_TB/MGPU_VT2; j++ )
     {
       #pragma unroll
       for(int i = 0; i < VT; ++i)
