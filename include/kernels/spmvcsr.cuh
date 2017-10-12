@@ -166,13 +166,12 @@ struct CTASpmvLoad {
 				tid, matrixData, identity);
 		
 		// Use ldg to load vector data in strided order.
-		T      vecData[VT*MGPU_TB];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
 		{
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
-    	  vecData[i*MGPU_TB+j] = ldg(vec_global + columns[i]*MGPU_BC + j);
+    	  data[i+j*VT] = ldg(vec_global + columns[i]*MGPU_BC + j);
     }
 
 		// Clear out the out-of-range inputs. 
@@ -184,12 +183,11 @@ struct CTASpmvLoad {
 				{
         	#pragma unroll
           for( int j=0; j<MGPU_TB; j++ )
-            vecData[i*MGPU_TB+j] = identity;
+            data[i+j*VT] = identity;
         }
 		}	
 
 		// Multiply matrix and vector values together.
-		T stridedData[VT*MGPU_TB];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
 		{
@@ -197,8 +195,8 @@ struct CTASpmvLoad {
       for( int j=0; j<MGPU_TB; j++ )
       {
         //if( !tid ) printf("%d,%d\n", i, j);
-        stridedData[i+j*VT] = LoadLeft ? 
-          mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
+        data[i+j*VT] = LoadLeft ? 
+          mulOp(matrixData[i], data[i+j*VT]) : data[i*MGPU_TB+j];
         //if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
         //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
@@ -206,12 +204,12 @@ struct CTASpmvLoad {
 
 		// Transpose from strided to thread order.
 		if(HalfCapacity)
-			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
+			HalfSmemTranspose<NT, VT>(data, tid, storage.data, data);
 		else {
       // Cannot unroll, because using smem resource sequentially
       for( int j=0; j<MGPU_TB; j++ )
       {
-			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data);
+			  DeviceRegToShared<NT, VT>(data+j*VT, tid, storage.data);
 			  DeviceSharedToThread<VT>(storage.data, tid, data+j*VT);
       }
 		}
@@ -503,7 +501,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     // Removed Indirect load case
     // This is a direct load so we don't have a data-dependency on the
     // limits.
-    SpmvLoad::LoadDirectSpmmVector(count2, tid, gid, 
+    SpmvLoad::LoadDirectSpmm(count2, tid, gid, 
       matrix_global, cols_global, vec_global+slab*MGPU_TB, 
       identity, mulOp, data, shared.spmvLoadStorage);
 
