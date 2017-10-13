@@ -99,7 +99,7 @@ struct CTASpmvLoad {
 	
 	union Storage {
 		int sources[NV];
-		T data[Capacity*MGPU_NT/MGPU_NTX];
+		T data[Capacity];
 		//typename SegReduce::Storage segReduceStorage;
 	};
 
@@ -154,15 +154,17 @@ struct CTASpmvLoad {
 		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
 		T identity, MulOp mulOp, T data[VT*MGPU_TB], Storage& storage) {
 
+    const int NT2 = MGPU_NTX;
+
 		// Load column indices directly from cols_global.
 		int columns[VT];
-		DeviceGlobalToRegDefault<NT, VT>(count2, cols_global + gid, tid,
+		DeviceGlobalToRegDefault<NT2, VT>(count2, cols_global + gid, tid,
 			columns, 0);
 
 		// Load values into stridedData.
 		T matrixData[VT];
 		if(LoadLeft)
-			DeviceGlobalToRegDefault<NT, VT>(count2, matrix_global + gid,
+			DeviceGlobalToRegDefault<NT2, VT>(count2, matrix_global + gid,
 				tid, matrixData, identity);
 		
 		// Use ldg to load vector data in strided order.
@@ -176,11 +178,11 @@ struct CTASpmvLoad {
     }
 
 		// Clear out the out-of-range inputs. 
-		if(count2 < NV)
+		if(count2 < NT2*VT)
     {
 			#pragma unroll
 			for(int i = 0; i < VT; ++i)
-				if(NT * i + tid >= count2)
+				if(NT2 * i + tid >= count2)
 				{
         	#pragma unroll
           for( int j=0; j<MGPU_TB; j++ )
@@ -196,10 +198,9 @@ struct CTASpmvLoad {
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
       {
-        //if( !tid ) printf("%d,%d\n", i, j);
         stridedData[i+j*VT] = LoadLeft ? 
           mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==0 )
+        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==1 )
         //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
       }
     }
@@ -212,7 +213,7 @@ struct CTASpmvLoad {
       // Cannot unroll, because using smem resource sequentially
       for( int j=0; j<MGPU_TB; j++ )
       {
-			  DeviceRegToShared<NT, VT>(stridedData+j*VT, tid, storage.data+NV*tiy);
+			  DeviceRegToShared<NT2, VT>(stridedData+j*VT, tid, storage.data+NV*tiy);
 			  DeviceSharedToThread<VT>(storage.data+NV*tiy, tid, data+j*VT);
       }
 		}
@@ -458,6 +459,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	const int NT = Params::NT;
 	const int VT = Params::VT;
 	const int NV = NT * VT;
+  const int NT2= MGPU_NTX;
+  const int NV2= MGPU_NTX * VT;
 	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
 
 	typedef CTAReduce<NT, AddOp> FastReduce;
@@ -465,7 +468,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	typedef CTASpmvLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmvLoad;
 
 	union Shared {
-		int csr[NV + 1];
+		int csr[NV2 + 1];
 		typename SegReduce::Storage segReduceStorage;
 		typename SpmvLoad::Storage spmvLoadStorage;
 	};
@@ -473,8 +476,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
 	int tid = threadIdx.x;
 	int block = blockIdx.x;
-	int gid = NV * block;
-	int count2 = min(NV, nz - gid);
+	int gid = NV2 * block;
+	int count2 = min(NV2, nz - gid);
 
 	// Retrieve the left and right row limits.
 	int limit0 = limits_global[block];
@@ -493,12 +496,12 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
   // Load the CSR interval.
   if( threadIdx.y==0 )
-    DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+    DeviceGlobalToSharedLoop<NT2, VT>(numRows, csr_global + range.begin, tid, 
       shared.csr);
   __syncthreads();
 
   // Flatten CSR->COO and return the segmented scan terms.
-  terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid,
+  terms = DeviceSegReducePrepare<NT2, VT>(shared.csr, numRows, tid, gid,
     range.flushLast, rows, rowStarts);
 
   int tiy = threadIdx.y + blockIdx.y*blockDim.y;
@@ -603,10 +606,10 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 
   dim3 nt, nb;
   nt.x = MGPU_NTX;
-  nt.y = MGPU_NT/MGPU_NTX;
+  nt.y = MGPU_NTY;
   nt.z = 1;
 	nb.x = MGPU_DIV_UP(nz, NV);
-  nb.y = MGPU_BC/MGPU_TB/nt.y;
+  nb.y = MGPU_BC/MGPU_TB/MGPU_NTY;
   nb.z = 1;
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.

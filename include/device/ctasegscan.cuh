@@ -85,7 +85,7 @@ struct CTASegScan {
 	enum { NumWarps = NT / 32, Size = NT, Capacity = 2 * NT };
 	union Storage {
     int delta[NumWarps];
-    T values[Capacity*2*MGPU_BC/MGPU_TB];
+    T values[Capacity*2*MGPU_NT/MGPU_NTX];
 	};
 
 	// Each thread passes the reduction of the LAST SEGMENT that it covers.
