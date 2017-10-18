@@ -306,27 +306,24 @@ struct CTASegReduce {
 		//if(HalfCapacity && total > Capacity) {
 			// Add carry-in to each thread-local scan value. Store directly
 			// to global.
-      float4 x2[MGPU_TB>>2];
+      float x2[MGPU_TB];
 			#pragma unroll
 			for(int i = 0; i < VT; ++i) {
 				// Add the carry-in to the local scan.
         #pragma unroll
-        for( int j=0; j<MGPU_TB>>2; j++ )
+        for( int j=0; j<MGPU_TB; j++ )
         {
-          x2[j].x = op(carryIn[(j<<2)  ], localScan[i+(j<<2)*VT]     );
-          x2[j].y = op(carryIn[(j<<2)+1], localScan[i+(j<<2)*VT+1*VT]);
-          x2[j].z = op(carryIn[(j<<2)+2], localScan[i+(j<<2)*VT+2*VT]);
-          x2[j].w = op(carryIn[(j<<2)+3], localScan[i+(j<<2)*VT+3*VT]);
+          x2[j] = op(carryIn[(j)  ], localScan[i+j*VT]     );
         }
 
 				// Store on the end flag and clear the carry-in.
         //if( tid==1 ) printf("%d = %d\n", rows[i], rows[i+1]);
 				if(rows[i] != rows[i + 1]) {
           #pragma unroll
-          for( int j=0; j<MGPU_TB>>2; j++ )
+          for( int j=0; j<MGPU_TB; j++ )
           {
 					  carryIn[j] = identity;
-					  reinterpret_cast<float4*>(dest_global)[rows[i]*(MGPU_BC>>2)+j] =x2[j];
+					  dest_global[rows[i]*MGPU_BC+j] =x2[j];
             //if( tid==1 )//x2[j]>0.f )
             //  printf("cta %d,%d,%d,%d,%d:%f\n", tid, i, j, rows[i],rows[i+1],x2[j]);
           }
