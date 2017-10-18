@@ -62,7 +62,9 @@ MGPU_DEVICE void DeviceGlobalToRegPred(int count, InputIt data, int tid,
 	#pragma unroll
 	for(int i = 0; i < VT; ++i) {
 		int index = NT * i + tid;
-		if(index < count) reg[i] = data[index];
+		if(index < count) {reg[i] = data[index];
+    if( blockIdx.x==0 && blockIdx.z==0 )
+        printf("tid:%d,val:%d\n",tid, reg[i]);}
 	}
 	if(sync) __syncthreads();
 }
@@ -74,7 +76,11 @@ MGPU_DEVICE void DeviceGlobalToReg(int count, InputIt data, int tid,
 	if(count >= NT * VT) {
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
+    {
 			reg[i] = data[NT * i + tid];
+      if( blockIdx.x==0 && blockIdx.z==0 )
+        printf("tid:%d,val:%d\n",tid,reg[i]);
+    }
 	} else
 		DeviceGlobalToRegPred<NT, VT>(count, data, tid, reg, false);
 	if(sync) __syncthreads();
@@ -288,13 +294,8 @@ template<int NT, int VT, typename InputIt, typename T>
 MGPU_DEVICE void DeviceGlobalToSharedLoop(int count, InputIt source, int tid,
 	T* dest, bool sync) {
 
-	const int Granularity = MGPU_MIN(VT, 3);
+	const int Granularity = VT;
 	DeviceGlobalToShared<NT, Granularity>(count, source, tid, dest, false);
-
-	int offset = Granularity * NT;
-	if(count > offset)
-		DeviceGlobalToShared<NT, VT - Granularity>(count - offset,
-			source + offset, tid, dest + offset, false);
 
 	if(sync) __syncthreads();
 

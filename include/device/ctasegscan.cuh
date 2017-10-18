@@ -85,7 +85,8 @@ struct CTASegScan {
 	enum { NumWarps = NT / 32, Size = NT, Capacity = 2 * NT };
 	union Storage {
     int delta[NumWarps];
-    T values[Capacity*2*MGPU_NT/MGPU_NTX];
+    T values[Capacity];
+    //T values[Capacity*2*MGPU_NT/MGPU_NTX];
 	};
 
 	// Each thread passes the reduction of the LAST SEGMENT that it covers.
@@ -105,22 +106,21 @@ struct CTASegScan {
 
 		// Run an inclusive scan 
 		int first = 0;
-    const int tiy = threadIdx.y*2*NT;
-		storage.values[first + tid + tiy] = x;
+		storage.values[first + tid] = x;
 		__syncthreads();
 
 		#pragma unroll
 		for(int offset = 1; offset < NT; offset += offset) {
 			if(tidDelta >= offset) 
-				x = op(storage.values[first + tid - offset + tiy], x);
+				x = op(storage.values[first + tid - offset], x);
 			first = NT - first;
-			storage.values[first + tid + tiy] = x;
+			storage.values[first + tid] = x;
 			__syncthreads();
 		}
 
 		// Get the exclusive scan.
-		x = tid ? storage.values[first + tid - 1 + tiy] : identity;
-		*carryOut = storage.values[first + NT - 1 + tiy];
+		x = tid ? storage.values[first + tid - 1] : identity;
+		*carryOut = storage.values[first + NT - 1];
 		__syncthreads();
 		return x;
 	}

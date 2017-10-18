@@ -75,119 +75,30 @@ struct CTASpmmLoad {
 		NV = NT * VT,
 		Capacity = HalfCapacity ? (NV / 2) : NV
 	};
-	//typedef CTASegReduce<NT, VT, HalfCapacity, T, MulOp> SegReduce;
-	
-	union Storage {
-		int sources[NV];
-		T data[Capacity];
-		//typename SegReduce::Storage segReduceStorage;
-	};
 
+  // Note: count2 = how many nnz we need to load in terms of tid
 	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
-	MGPU_DEVICE static void LoadDirect(int count2, int tid, int gid, 
-		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
-		T identity, MulOp mulOp, T data[VT], Storage& storage) {
+	MGPU_DEVICE static void LoadDirectSpmm(int count2, int tid,
+		MatrixIt matrixData[VT], ColumnsIt columns[VT], VecIt vec_global, 
+    const int slab, T identity, MulOp mulOp, T data[MGPU_TB] ) {
 
-		// Load columns directly from cols_global.
-		int columns[VT];
-		DeviceGlobalToRegDefault<NT, VT>(count2, cols_global + gid, tid,
-			columns, 0);
-
-		// Load data into stridedData.
-		T matrixData[VT];
-		if(LoadLeft)
-			DeviceGlobalToRegDefault<NT, VT>(count2, matrix_global + gid,
-				tid, matrixData, identity);
-		
 		// Use ldg to load vector data in strided order.
-		T vecData[VT];
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-			vecData[i] = ldg(vec_global + columns[i]);
-		
-		// Clear out the out-of-range inputs. 
-		if(count2 < NV) {
-			#pragma unroll
-			for(int i = 0; i < VT; ++i)
-				if(NT * i + tid >= count2)
-					vecData[i] = identity;
-		}	
-
-		// Multiply matrix and vector values together.
-		T stridedData[VT];
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-			stridedData[i] = LoadLeft ? 
-				mulOp(matrixData[i], vecData[i]) : vecData[i];
-
-		// Transpose from strided to thread order.
-		if(HalfCapacity)
-			HalfSmemTranspose<NT, VT>(stridedData, tid, storage.data, data);
-		else {
-			DeviceRegToShared<NT, VT>(stridedData, tid, storage.data);
-			DeviceSharedToThread<VT>(storage.data, tid, data);
-		}
-	}
-
-	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
-	MGPU_DEVICE static void LoadDirectSpmm(int count2, int tid, int gid, 
-		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
-		T identity, MulOp mulOp, T data[VT*MGPU_TB], Storage& storage) {
-
-    const int NT2 = MGPU_NTX;
-
-		// Load column indices directly from cols_global.
-		int columns[VT];
-		DeviceGlobalToRegDefault<NT2, VT>(count2, cols_global + gid, tid,
-			columns, 0);
-
-		// Load values into stridedData.
-		T matrixData[VT];
-		if(LoadLeft)
-			DeviceGlobalToRegDefault<NT2, VT>(count2, matrix_global + gid,
-				tid, matrixData, identity);
-		
-		// Use ldg to load vector data in strided order.
-		T      vecData[VT*MGPU_TB];
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-		{
-      #pragma unroll
-      for( int j=0; j<MGPU_TB; j++ )
-    	  vecData[i*MGPU_TB+j] = ldg(vec_global + columns[i]*MGPU_BC + j);
-    }
-
-		// Clear out the out-of-range inputs. 
-		if(count2 < NT2*VT)
+    #pragma unroll
+    for( int ii=0; ii<MGPU_TB; ii++ )
     {
-			#pragma unroll
-			for(int i = 0; i < VT; ++i)
-				if(NT2 * i + tid >= count2)
-				{
-        	#pragma unroll
-          for( int j=0; j<MGPU_TB; j++ )
-            vecData[i*MGPU_TB+j] = identity;
-        }
-		}	
-
-		// Multiply matrix and vector values together.
-		T stridedData[VT*MGPU_TB];
-		#pragma unroll
-		for(int i = 0; i < VT; ++i)
-		{
-      #pragma unroll
-      for( int j=0; j<MGPU_TB; j++ )
-      {
-        stridedData[i+j*VT] = LoadLeft ? 
-          mulOp(matrixData[i], vecData[i*MGPU_TB+j]) : vecData[i*MGPU_TB+j];
-        //if( stridedData[i+j*VT]!=0.f && blockIdx.x==1 )
-        //  printf("%d,%d,%d,%d,%d:%f\n", tid, i,j,i+j*VT, columns[i], stridedData[i+j*VT]); 
-      }
+      int col_all = __shfl(columns[   0], ii+slab);
+      T   val_all = __shfl(matrixData[0], ii+slab);
+    	data[ii]    = val_all*__ldg(vec_global+col_all);
     }
 
-    const int tiy = threadIdx.y;
+		// Clear out the out-of-range inputs. 
+		if( count2 < NV && tid >= count2)
+      #pragma unroll
+      for( int ii=0; ii<MGPU_TB; ii++ )
+        data[ii] = identity;
+
 		// Transpose from strided to thread order.
-		if(HalfCapacity)
+		/*if(HalfCapacity)
 			HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
 		else {
       // Cannot unroll, because using smem resource sequentially
@@ -196,7 +107,7 @@ struct CTASpmmLoad {
 			  DeviceRegToShared<NT2, VT>(stridedData+j*VT, tid, storage.data+NV*tiy);
 			  DeviceSharedToThread<VT>(storage.data+NV*tiy, tid, data+j*VT);
       }
-		}
+		}*/
 	}
 };
 
@@ -212,34 +123,32 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 	const int NT = Params::NT;
 	const int VT = Params::VT;
 	const int NV = NT * VT;
-  const int NT2= MGPU_NTX;
-  const int NV2= MGPU_NTX * VT;
 	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
 
 	typedef CTAReduce<NT, AddOp> FastReduce;
 	typedef CTASegReduce<NT, VT, HalfCapacity, T, AddOp> SegReduce;
-	typedef CTASpmmLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmmLoad;
+  typedef CTASpmmLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmmLoad;
 
 	union Shared {
-		int csr[NV2 + 1];
+		int csr[NV + 1];
 		typename SegReduce::Storage segReduceStorage;
-		typename SpmmLoad::Storage spmmLoadStorage;
 	};
 	__shared__ Shared shared;
 
 	int tid = threadIdx.x;
 	int block = blockIdx.x;
-	int gid = NV2 * block;
-	int count2 = min(NV2, nz - gid);
+	int gid = NV * block;
+	int count2 = min(NV, nz - gid);
+  int lane_id = tid & (32 - 1);
 
 	// Retrieve the left and right row limits.
-	int limit0 = limits_global[block];
-	int limit1 = limits_global[block + 1];
+	int limit0 = __ldg(limits_global+block);
+  int limit1 = __ldg(limits_global+block + 1);
 
 	SegReduceRange range;
 	SegReduceTerms terms;
-	int rows[VT + 1], rowStarts[VT];
-	T data[VT*MGPU_TB];
+	int rows[MGPU_TB + 1], rowStarts[MGPU_TB];
+	T data[MGPU_TB];
 
   // Transform the row limits into ranges.
   range = DeviceShiftRange(limit0, limit1);
@@ -248,29 +157,53 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   //if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
 
   // Load the CSR interval.
-  if( threadIdx.y==0 )
-    DeviceGlobalToSharedLoop<NT2, VT>(numRows, csr_global + range.begin, tid, 
+  DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
       shared.csr);
   __syncthreads();
 
-  // Flatten CSR->COO and return the segmented scan terms.
-  terms = DeviceSegReducePrepare<NT2, VT>(shared.csr, numRows, tid, gid,
-      range.flushLast, rows, rowStarts);
+  // Load column indices directly from cols_global.
+  // Load values into stridedData.
+  int columns[VT];
+  T matrixData[VT];
+	if( tid < count2 )
+  {
+    columns[0]    = __ldg(cols_global+tid)<<6;
+    matrixData[0] = __ldg(matrix_global+tid);
+  }
+  else
+  {
+    columns[0]    = 0;
+    matrixData[0] = 0.f;
+  }
 
-  int tiy = threadIdx.y + blockIdx.y*blockDim.y;
-  // Removed Indirect load case
-  // This is a direct load so we don't have a data-dependency on the
-  // limits.
-  SpmmLoad::LoadDirectSpmm(count2, tid, gid, 
-      matrix_global, cols_global, vec_global+tiy*MGPU_TB, 
-      identity, mulOp, data, shared.spmmLoadStorage);
+  for( int slab=0; slab<32; slab+=MGPU_TB )
+  {
+    // Removed Indirect load case
+    // This is a direct load so we don't have a data-dependency on the
+    // limits.
+    SpmmLoad::LoadDirectSpmm(count2, tid,
+        matrixData, columns, vec_global+slab+(blockIdx.z<<5), 
+        slab, identity, mulOp, data);
 
-  // Reduce tile data and store to dest_global. Write tile's carry-out
-  // term to carryOut_global.
-  SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
-		  range.begin, block, tid, data, dest_global+tiy*MGPU_TB, 
-      carryOut_global+tiy*MGPU_TB*gridDim.x,
-		  identity, addOp, shared.segReduceStorage);
+    // Flatten CSR->COO and return the segmented scan terms.
+    if( lane_id==0 )
+      terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid+slab,
+          gid, range.flushLast, rows, rowStarts);
+    #pragma unroll
+    for( int i=0; i<MGPU_TB+1; i++ )
+      rows[i] = __shfl(rows[i], 0);
+    #pragma unroll
+    for( int i=0; i<MGPU_TB; i++ )
+      rowStarts[i] = __shfl(rowStarts[i], 0);
+    terms.tidDelta = __shfl(terms.tidDelta, 0);
+
+    // Reduce tile data and store to dest_global. Write tile's carry-out
+    // term to carryOut_global.
+    SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
+        range.begin, block, tid, data, dest_global+slab+(blockIdx.z<<5), 
+        carryOut_global+slab*gridDim.x,
+        identity, addOp, shared.segReduceStorage);
+  }
 }
 
 template<typename DestIt>
@@ -323,10 +256,10 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   dim3 nt, nb;
   nt.x = MGPU_NTX;
   nt.y = MGPU_NTY;
-  nt.z = 1;
+  nt.z = MGPU_NTZ;
 	nb.x = MGPU_DIV_UP(nz, NV);
-  nb.y = MGPU_BC/MGPU_TB/MGPU_NTY;
-  nb.z = 1;
+  nb.y = 1;
+  nb.z = B_ncols/32;
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.
 	PartitionCsrSegReducePrealloc(nz, NV, csr_global, numRows, numRows2_global, 
