@@ -174,90 +174,21 @@ struct CTASegReduce {
 	};
 	
 	template<typename DestIt>
-	MGPU_DEVICE static void ReduceToGlobal(const int rows[VT + 1], int total,
-		int tidDelta, int startRow, int block, int tid, T data[VT], 
-		DestIt dest_global, T* carryOut_global, T identity, Op op, 
-		Storage& storage) {
+	MGPU_DEVICE static T ReduceToGlobalSpmm(
+    const int rows[VT + 1], int total, int tidDelta, int startRow, int block, 
+    int tid, int lane_id, T data[VT*MGPU_TB], DestIt dest_global, 
+    T* carryOut_global, T carryIn, int slab, T identity, Op op, 
+    Storage& storage) {
 
 		// Run a segmented scan within the thread.
-		T x, localScan[VT];
-		#pragma unroll
-		for(int i = 0; i < VT; ++i) {
-			x = i ? op(x, data[i]) : data[i];
-			localScan[i] = x;
-			if(rows[i] != rows[i + 1]) x = identity;
-		}
-
-		// Run a parallel segmented scan over the carry-out values to compute
-		// carry-in.
-		T carryOut;
-		T carryIn = SegScan::SegScanDelta(tid, tidDelta, x,
-			storage.segScanStorage, &carryOut, identity, op);
-
-		// Store the carry-out for the entire CTA to global memory.
-		if(!tid) carryOut_global[block] = carryOut;
-		
-		dest_global += startRow;
-		if(HalfCapacity && total > Capacity) {
-			// Add carry-in to each thread-local scan value. Store directly
-			// to global.
-			#pragma unroll
-			for(int i = 0; i < VT; ++i) {
-				// Add the carry-in to the local scan.
-				T x2 = op(carryIn, localScan[i]);
-
-				// Store on the end flag and clear the carry-in.
-				if(rows[i] != rows[i + 1]) {
-					carryIn = identity;
-					dest_global[rows[i]] = x2;
-				}
-			}
-		} else {
-			// All partials fit in shared memory. Add carry-in to each thread-
-			// local scan value.
-			#pragma unroll
-			for(int i = 0; i < VT; ++i) {
-				// Add the carry-in to the local scan.
-				T x2 = op(carryIn, localScan[i]);
-
-				// Store reduction when the segment changes and clear the 
-				// carry-in.
-				if(rows[i] != rows[i + 1]) {
-					storage.values[rows[i]] = x2;
-					carryIn = identity;
-				}
-			}
-			__syncthreads();
-
-			// Cooperatively store reductions to global memory.
-			for(int index = tid; index < total; index += NT)
-				dest_global[index] = storage.values[index];
-			__syncthreads();
-		}
-	}
-
-	template<typename DestIt>
-	MGPU_DEVICE static void ReduceToGlobalSpmm(
-    const int rows[VT + 1], int total,
-		int tidDelta, int startRow, int block, int tid, T data[VT*MGPU_TB],
-		DestIt dest_global, T* carryOut_global, T identity, Op op, 
-		Storage& storage) {
-
-		// Run a segmented scan within the thread.
-		T x[MGPU_TB], localScan[VT*MGPU_TB];
+		T x, localScan[MGPU_TB];
     #pragma unroll
-    for(int i = 0; i < VT; ++i)
+    for(int i = 0; i < MGPU_TB; ++i)
     {
-      #pragma unroll
-      for( int j=0; j<MGPU_TB; j++ )
-      {
-        x[j] = i ? op(x[j], data[i+j*VT]) : data[i+j*VT];
-        localScan[i+j*VT] = x[j];
-      }
+      x = i ? op(x, data[i]) : data[i];
+      localScan[i] = x;
       if(rows[i] != rows[i + 1]) 
-        #pragma unroll
-        for( int j=0; j<MGPU_TB; j++ )
-          x[j] = identity;
+        x = identity;
     }
     /*if( tid==0 && blockIdx.x==1 && blockIdx.y==0 && threadIdx.y==0)//|| tid==1 )
     {
@@ -282,22 +213,9 @@ struct CTASegReduce {
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
-		T carryOut[MGPU_TB];
-    T carryIn[ MGPU_TB];
-    for( int j=0; j<MGPU_TB; j++ )
-		  carryIn[j] = SegScan::SegScanDelta(tid, tidDelta, x[j],
-			  storage.segScanStorage, &carryOut[j], identity, op);
-
-		// Store the carry-out for the entire CTA to global memory.
-		if(!tid)
-    {
-      #pragma unroll 
-      for( int j=0; j<MGPU_TB; j++ )
-      {
-        carryOut_global[block+j*gridDim.x] = carryOut[j];
-        //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
-      }
-		}
+		T carryOut;
+		carryIn = SegScan::SegScanDelta(tid, tidDelta, x,
+			  storage.segScanStorage, &carryOut, identity, op);
 
 		dest_global += startRow*MGPU_BC;
 
@@ -306,32 +224,32 @@ struct CTASegReduce {
 		//if(HalfCapacity && total > Capacity) {
 			// Add carry-in to each thread-local scan value. Store directly
 			// to global.
-      float4 x2[MGPU_TB>>2];
+      float x2;
 			#pragma unroll
-			for(int i = 0; i < VT; ++i) {
+			for(int i = 0; i < MGPU_TB; ++i)
+      {
 				// Add the carry-in to the local scan.
-        #pragma unroll
-        for( int j=0; j<MGPU_TB>>2; j++ )
-        {
-          x2[j].x = op(carryIn[(j<<2)  ], localScan[i+(j<<2)*VT]     );
-          x2[j].y = op(carryIn[(j<<2)+1], localScan[i+(j<<2)*VT+1*VT]);
-          x2[j].z = op(carryIn[(j<<2)+2], localScan[i+(j<<2)*VT+2*VT]);
-          x2[j].w = op(carryIn[(j<<2)+3], localScan[i+(j<<2)*VT+3*VT]);
-        }
+        x2 = op(carryIn, localScan[i]);
 
 				// Store on the end flag and clear the carry-in.
         //if( tid==1 ) printf("%d = %d\n", rows[i], rows[i+1]);
-				if(rows[i] != rows[i + 1]) {
-          #pragma unroll
-          for( int j=0; j<MGPU_TB>>2; j++ )
-          {
-					  carryIn[j] = identity;
-					  reinterpret_cast<float4*>(dest_global)[rows[i]*(MGPU_BC>>2)+j] =x2[j];
+				if(rows[i] != rows[i + 1])
+        {
+					carryIn = identity;
+					dest_global[rows[i]*MGPU_BC+lane_id] = x2;
             //if( tid==1 )//x2[j]>0.f )
             //  printf("cta %d,%d,%d,%d,%d:%f\n", tid, i, j, rows[i],rows[i+1],x2[j]);
-          }
 				}
-			}
+      }
+		// Store the carry-out for the entire CTA to global memory.
+		if(slab==32)
+    {
+      if(tid<32)
+        carryOut_global[block*MGPU_BC+tid] = carryOut;
+        //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
+		}
+    else
+      return carryOut;
 		/*} else {
 			// All partials fit in shared memory. Add carry-in to each thread-
 			// local scan value.

@@ -176,6 +176,21 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     matrixData[0] = 0.f;
   }
 
+  T carryIn = 0.f;
+  T carryOut;
+    if( lane_id==0 )
+      terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid,
+          gid, range.flushLast, rows, rowStarts);
+    #pragma unroll
+    for( int i=0; i<MGPU_TB+1; i++ )
+      rows[i] = __shfl(rows[i], 0);
+    #pragma unroll
+    for( int i=0; i<MGPU_TB; i++ )
+      rowStarts[i] = __shfl(rowStarts[i], 0);
+    terms.tidDelta = __shfl(terms.tidDelta, 0);
+    printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
+    printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
+
   for( int slab=0; slab<32; slab+=MGPU_TB )
   {
     // Removed Indirect load case
@@ -186,9 +201,9 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
         slab, identity, mulOp, data);
 
     // Flatten CSR->COO and return the segmented scan terms.
-    if( lane_id==0 )
-      terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid+slab,
-          gid, range.flushLast, rows, rowStarts);
+    //if( lane_id==0 )
+    //  terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid+slab,
+    //      gid, range.flushLast, rows, rowStarts);
     #pragma unroll
     for( int i=0; i<MGPU_TB+1; i++ )
       rows[i] = __shfl(rows[i], 0);
@@ -199,10 +214,11 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
     // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.
-    SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
-        range.begin, block, tid, data, dest_global+slab+(blockIdx.z<<5), 
-        carryOut_global+slab*gridDim.x,
-        identity, addOp, shared.segReduceStorage);
+    carryOut = SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
+        range.begin, block, tid, lane_id, data, 
+        dest_global+slab+(blockIdx.z<<5), carryOut_global+(blockIdx.z<<5), 
+        carryIn, slab, identity, addOp, shared.segReduceStorage);
+    carryIn  = carryOut;
   }
 }
 
