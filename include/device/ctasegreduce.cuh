@@ -37,7 +37,7 @@
 #include "ctasegscan.cuh"
 #include "ctasearch.cuh"
 
-#include "../constants.h"
+//#include "../constants.h"
 
 namespace mgpu {
 
@@ -180,12 +180,12 @@ MGPU_DEVICE SegReduceTerms DeviceSegReducePrepareSpmm(const int* csr_shared,
 // Core segmented reduction code. Supports fast-path and slow-path for intra-CTA
 // segmented reduction. Stores partials to global memory.
 // Callers feed CTASegReduce::ReduceToGlobal values in thread order.
-template<int NT, int VT, bool HalfCapacity, typename T, typename Op>
+template<int NT, int MGPU_TB, bool HalfCapacity, typename T, typename Op>
 struct CTASegReduce {
 	typedef CTASegScan<NT, Op> SegScan;
 
 	enum {
-		NV = NT * VT,
+		NV = NT,
 		Capacity = HalfCapacity ? (NV / 2) : NV
 	};
 
@@ -198,7 +198,7 @@ struct CTASegReduce {
 	template<typename DestIt>
 	MGPU_DEVICE static T ReduceToGlobalSpmm(
     const int rows[MGPU_TB + 1], int total, int tidDelta, int startRow, 
-    int block, int tid, int lane_id, T data[VT*MGPU_TB], DestIt dest_global, 
+    int block, int tid, int lane_id, T data[MGPU_TB], DestIt dest_global, 
     T* carryOut_global, T carryInPrev, int slab, T identity, Op op, 
     T* storage) {
 
@@ -223,7 +223,7 @@ struct CTASegReduce {
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
-		dest_global += startRow*MGPU_BC;
+		dest_global += startRow<<6;
 
     // TODO: Implement shared memory write out to global
     //      -else() part of this statement
@@ -242,7 +242,7 @@ struct CTASegReduce {
 				if(rows[i] != rows[i + 1])
         {
 					//carryInPrev = identity;
-					dest_global[rows[i]*MGPU_BC+lane_id] = x2;
+					dest_global[rows[i]<<6+lane_id] = x2;
           //  if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
           //    printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
 				}
@@ -255,9 +255,9 @@ struct CTASegReduce {
     {
       __syncthreads();
       if( tid<224 && rows[MGPU_TB-1]==rows[MGPU_TB] )
-        dest_global[rows[MGPU_TB]*MGPU_BC+lane_id] += carryOut;
+        dest_global[rows[MGPU_TB]<<6+lane_id] += carryOut;
       if(tid>=224)
-        carryOut_global[block*MGPU_BC+(tid%32)] = carryOut;
+        carryOut_global[block<<6+(tid%32)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
       
 		}

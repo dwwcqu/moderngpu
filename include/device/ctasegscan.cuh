@@ -35,7 +35,7 @@
 #pragma once
 
 #include "../device/ctascan.cuh"
-#include "../constants.h"
+//#include "../constants.h"
 
 namespace mgpu {
 

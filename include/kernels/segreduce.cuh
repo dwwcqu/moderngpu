@@ -36,7 +36,7 @@
 
 #include "../kernels/csrtools.cuh"
 
-#include "../constants.h"
+//#include "../constants.h"
 
 namespace mgpu {
 
@@ -121,7 +121,7 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
 
   // Depending on register usage, could consider changing MGPU_TB 
   // here to MGPU_BC
-	T carryIn2[MGPU_TB];
+	/*T carryIn2[MGPU_TB];
 	T dest[    MGPU_TB];
 
 	// Run a segmented scan of the carry-in values.
@@ -154,7 +154,7 @@ __global__ void KernelSegReduceSpine1(const int* limits_global, int count,
       #pragma unroll
       for( int j=0; j<MGPU_TB; j++ )
         carryOut_global[block+j*gridDim.x+slab*MGPU_TB*gridDim.x] = carryOut[j];
-  }
+  }*/
 }
 
 template<int NT, typename T, typename DestIt, typename Op>
@@ -166,7 +166,7 @@ __global__ void KernelSegReduceSpine2(const int* limits_global, int numBlocks,
 	struct Shared {
 		typename SegScan::Storage segScanStorage;
 		int carryInRow;
-		T   carryIn[   MGPU_TB];
+		T   carryIn;
 	};
 	__shared__ Shared shared;
 
@@ -180,8 +180,8 @@ __global__ void KernelSegReduceSpine2(const int* limits_global, int numBlocks,
 			(0x7fffffff & limits_global[gid]) : INT_MAX;
 		int row2 = (gid + nv < count) ? 
 			(0x7fffffff & limits_global[gid + nv]) : INT_MAX;
-		T carryIn2[MGPU_TB], dest[MGPU_TB];
-		T carryOut[MGPU_TB], x[MGPU_TB];
+		T carryIn2, dest;
+		/*T carryOut[MGPU_TB], x[MGPU_TB];
 
 		// Run a segmented scan of the carry-in values.
 		bool endFlag = row != row2;
@@ -238,7 +238,7 @@ __global__ void KernelSegReduceSpine2(const int* limits_global, int numBlocks,
         }
         __syncthreads();
       }
-    }
+    }*/
 	}
 }
 
