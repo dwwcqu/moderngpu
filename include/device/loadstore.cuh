@@ -62,9 +62,9 @@ MGPU_DEVICE void DeviceGlobalToRegPred(int count, InputIt data, int tid,
 	#pragma unroll
 	for(int i = 0; i < VT; ++i) {
 		int index = NT * i + tid;
-		if(index < count) {reg[i] = data[index];
-    if( blockIdx.x==0 && blockIdx.z==0 )
-        printf("tid:%d,val:%d\n",tid, reg[i]);}
+		if(index < count) reg[i] = data[index];
+    //if( blockIdx.x==0 && blockIdx.z==0 )
+    //    printf("tid:%d,val:%d\n",tid, reg[i]);}
 	}
 	if(sync) __syncthreads();
 }
@@ -78,8 +78,8 @@ MGPU_DEVICE void DeviceGlobalToReg(int count, InputIt data, int tid,
 		for(int i = 0; i < VT; ++i)
     {
 			reg[i] = data[NT * i + tid];
-      if( blockIdx.x==0 && blockIdx.z==0 )
-        printf("tid:%d,val:%d\n",tid,reg[i]);
+      //if( blockIdx.x==0 && blockIdx.z==0 )
+      //  printf("tid:%d,val:%d\n",tid,reg[i]);
     }
 	} else
 		DeviceGlobalToRegPred<NT, VT>(count, data, tid, reg, false);

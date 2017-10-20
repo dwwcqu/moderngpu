@@ -89,12 +89,12 @@ struct CTASpmmLoad {
       int col_all = __shfl(columns[   0], ii+slab);
       T   val_all = __shfl(matrixData[0], ii+slab);
     	data[ii]    = val_all*__ldg(vec_global+col_all);
-      if( data[ii]!=0.f )
-        printf("tid %d: %f\n", tid, data[ii]);
+      //if( data[ii]!=0.f && blockIdx.x==1 && blockIdx.z==0 )
+      //  printf("tid %d: %f\n", tid, data[ii]);
     }
 
 		// Clear out the out-of-range inputs. 
-		if( count2 < NV && tid >= count2)
+		if( count2 < NV && (tid>>5) >= ((count2+31)>>5) )
       #pragma unroll
       for( int ii=0; ii<MGPU_TB; ii++ )
         data[ii] = identity;
@@ -169,9 +169,10 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   T matrixData[VT];
 	if( tid < count2 )
   {
-    columns[0]    = __ldg(cols_global+tid)<<6;
-    matrixData[0] = __ldg(matrix_global+tid);
-    //printf("tid:%d,col:%d,val:%f\n", tid, columns[0]>>6, matrixData[0]);
+    columns[0]    = __ldg(cols_global+gid+tid)<<6;
+    matrixData[0] = __ldg(matrix_global+gid+tid);
+    //if( blockIdx.x==1 && blockIdx.z==0 )
+    //  printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
   }
   else
   {
@@ -192,6 +193,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
         matrixData, columns, vec_global+lane_id+(blockIdx.z<<5), 
         slab, identity, mulOp, data);
     //if( threadIdx.x==0 && blockIdx.z==0 ) printf("%d:%d,%d,%d,%d,%d\n", blockIdx.x, shared_csr2[0], shared_csr2[1], shared_csr2[2], shared_csr2[3], shared_csr2[4]);
+      //if( (tid%32) < 16 && tid<48 && blockIdx.z==0 && blockIdx.x==0 )
+      //  printf("tid %d: %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3]);
 
     // Flatten CSR->COO and return the segmented scan terms.
     //terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr,
@@ -210,11 +213,11 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     for( int i=0; i<MGPU_TB; i++ )
       rowStarts[i] = __shfl(rowStarts[i], slab>>2);
     terms.tidDelta = __shfl(terms.tidDelta, slab>>2);
-    if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 )
+    /*if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 && blockIdx.x==1 )
     {
       printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
       printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
-    }
+    }*/
 
     // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.

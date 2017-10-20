@@ -212,14 +212,14 @@ struct CTASegReduce {
       if(rows[i] != rows[i + 1]) 
         x = identity;
     }
-    if( blockIdx.z==0 )
+    /*if( blockIdx.z==0 )
     {
       if( tid==0 || tid==32 )
         printf("tid %d: %d,%d,%d,%d\n", tid, rows[0], rows[1], rows[2], rows[3]);
       if( (tid%32) < 16 && tid<48 )
         printf("tid %d: %f,%f,%f,%f %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3], localScan[0], localScan[1], localScan[2], localScan[3]);
     }
-    __syncthreads();
+    __syncthreads();*/
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
@@ -242,22 +242,22 @@ struct CTASegReduce {
 				if(rows[i] != rows[i + 1])
         {
 					//carryInPrev = identity;
-					dest_global[rows[i]*MGPU_BC+lane_id+(blockIdx.z<<5)] = x2;
-            if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
-              printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
+					dest_global[rows[i]*MGPU_BC+lane_id] = x2;
+          //  if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
+          //    printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
 				}
       }
 		T carryOut = rows[MGPU_TB-1]!=rows[MGPU_TB] ? 0 : localScan[MGPU_TB-1];
-    if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
+    //if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
 
 		// Store the carry-out for the entire CTA to global memory.
 		if(slab==28)
     {
       __syncthreads();
       if( tid<224 && rows[MGPU_TB-1]==rows[MGPU_TB] )
-        dest_global[rows[MGPU_TB]*MGPU_BC+lane_id+(blockIdx.z<<5)] += carryOut;
+        dest_global[rows[MGPU_TB]*MGPU_BC+lane_id] += carryOut;
       if(tid>=224)
-        carryOut_global[block*MGPU_BC+(tid%32)+(blockIdx.z<<5)] = carryOut;
+        carryOut_global[block*MGPU_BC+(tid%32)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
       
 		}
