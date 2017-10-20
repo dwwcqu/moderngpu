@@ -125,6 +125,30 @@ struct CTASegScan {
 		return x;
 	}
 
+	MGPU_DEVICE static T SegScanDelta2(int tid, int tidDelta, T x, 
+		Storage& storage, T* carryOut, T identity = (T)0, Op op = Op()) {
+
+		// Run an inclusive scan 
+		int first = 0;
+		storage.values[first + tid] = x;
+		__syncthreads();
+
+		#pragma unroll
+		for(int offset = 1; offset < NT; offset += offset) {
+			if(tidDelta >= offset) 
+				x = op(storage.values[first + tid - offset], x);
+			first = NT - first;
+			storage.values[first + tid] = x;
+			__syncthreads();
+		}
+
+		// Get the exclusive scan.
+		x = storage.values[first + tid];
+		*carryOut = storage.values[first + NT - 1];
+		__syncthreads();
+		return x;
+	}
+
 	MGPU_DEVICE static T SegScan(int tid, T x, bool flag, Storage& storage,
 		T* carryOut, T identity = (T)0, Op op = Op()) {
 

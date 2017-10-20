@@ -84,11 +84,12 @@ MGPU_DEVICE void DeviceExpandFlagsToRows(int first, int endFlags,
 // emitting the csr0-relative row indices to register.
 
 template<int NT, int VT>
-MGPU_DEVICE int DeviceExpandCsrRows(int tidOffset, int* csr_shared, 
-	int numRows, int end, int rows[VT + 1], int rowStarts[VT]) {
+MGPU_DEVICE int DeviceExpandCsrRows(int tidOffset, int offset,
+  const int* csr_shared, int numRows, int end, int rows[VT + 1], 
+  int rowStarts[VT]) {
 		
 	// Each thread binary searches for its starting row.
-	int row = BinarySearch<MgpuBoundsUpper>(csr_shared, numRows, tidOffset,
+	int row = BinarySearch<MgpuBoundsUpper>(csr_shared, numRows, offset,
 		mgpu::less<int>()) - 1;
 
 	// Each thread starts at row and scans forward, emitting row IDs into
@@ -100,11 +101,13 @@ MGPU_DEVICE int DeviceExpandCsrRows(int tidOffset, int* csr_shared,
 	rows[0] = row;
 	rowStarts[0] = curOffset;
 	int endFlags = 0;
+  //if( threadIdx.x<32 && blockIdx.z==0 )
+  //printf("tid:%d,row:%d\n", threadIdx.x, row);
 	
 	#pragma unroll
 	for(int i = 1; i <= VT; ++i) {
 		// Advance the row cursor when the iterator hits the next row offset.
-		if(tidOffset + i == nextOffset) {
+		if( offset + i == nextOffset) {
 			// Set an end flag when the cursor advances to the next row.
 			endFlags |= 1<< (i - 1);
 
@@ -153,6 +156,25 @@ MGPU_DEVICE SegReduceTerms DeviceSegReducePrepare(int* csr_shared, int numRows,
 	return terms;
 }
 
+template<int NT, int VT>
+MGPU_DEVICE SegReduceTerms DeviceSegReducePrepareSpmm(const int* csr_shared, 
+    int* csr_shared2, int numRows, int offset, int tid, int gid, 
+    bool flushLast, int rows[VT + 1], int rowStarts[VT]) {
+
+	// Pass a sentinel (end) to point to the next segment start. If we flush,
+	// this is the end of this tile. Otherwise it is INT_MAX
+	int endFlags = DeviceExpandCsrRows<NT, VT>(gid + VT * tid, gid+VT*(tid%32)+offset, csr_shared,
+		numRows, flushLast ? (gid + NT * VT) : INT_MAX, rows, rowStarts);
+
+	// Find the distance to to scan to compute carry-in for each thread. Use the
+	// existance of an end flag anywhere in the thread to determine if carry-out
+	// values from the left should propagate through to the right.
+	int tidDelta = DeviceFindSegScanDelta<NT>(tid, rows[0] != rows[VT],
+		csr_shared2);
+
+	SegReduceTerms terms = { endFlags, tidDelta };
+	return terms;
+}
 ////////////////////////////////////////////////////////////////////////////////
 // CTASegReduce
 // Core segmented reduction code. Supports fast-path and slow-path for intra-CTA
@@ -175,48 +197,32 @@ struct CTASegReduce {
 	
 	template<typename DestIt>
 	MGPU_DEVICE static T ReduceToGlobalSpmm(
-    const int rows[VT + 1], int total, int tidDelta, int startRow, int block, 
-    int tid, int lane_id, T data[VT*MGPU_TB], DestIt dest_global, 
-    T* carryOut_global, T carryIn, int slab, T identity, Op op, 
-    Storage& storage) {
+    const int rows[MGPU_TB + 1], int total, int tidDelta, int startRow, 
+    int block, int tid, int lane_id, T data[VT*MGPU_TB], DestIt dest_global, 
+    T* carryOut_global, T carryInPrev, int slab, T identity, Op op, 
+    T* storage) {
 
 		// Run a segmented scan within the thread.
 		T x, localScan[MGPU_TB];
     #pragma unroll
     for(int i = 0; i < MGPU_TB; ++i)
     {
-      x = i ? op(x, data[i]) : data[i];
+      x = i ? op(x, data[i]) : op(carryInPrev, data[i]);
       localScan[i] = x;
       if(rows[i] != rows[i + 1]) 
         x = identity;
     }
-    /*if( tid==0 && blockIdx.x==1 && blockIdx.y==0 && threadIdx.y==0)//|| tid==1 )
+    if( blockIdx.z==0 )
     {
-      printf("data %d:\n", tid);
-      for( int j=0; j<MGPU_TB; j++ )
-      {
-        for( int i=0; i<VT; i++ )
-          printf("%f ", data[i+j*VT]);
-        printf("\n");
-      }
+      if( tid==0 || tid==32 )
+        printf("tid %d: %d,%d,%d,%d\n", tid, rows[0], rows[1], rows[2], rows[3]);
+      if( (tid%32) < 16 && tid<48 )
+        printf("tid %d: %f,%f,%f,%f %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3], localScan[0], localScan[1], localScan[2], localScan[3]);
     }
-    if( tid==1 )//|| tid==1 )
-    {
-      printf("localScan %d:\n", tid);
-      for( int j=0; j<MGPU_TB; j++ )
-      {
-        for( int i=0; i<VT; i++ )
-          printf("%f ", localScan[i+j*VT]);
-        printf("\n");
-      }
-    }*/
+    __syncthreads();
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
-		T carryOut;
-		carryIn = SegScan::SegScanDelta(tid, tidDelta, x,
-			  storage.segScanStorage, &carryOut, identity, op);
-
 		dest_global += startRow*MGPU_BC;
 
     // TODO: Implement shared memory write out to global
@@ -229,24 +235,31 @@ struct CTASegReduce {
 			for(int i = 0; i < MGPU_TB; ++i)
       {
 				// Add the carry-in to the local scan.
-        x2 = op(carryIn, localScan[i]);
+        x2 = localScan[i];//op(carryInPrev, localScan[i]);
 
 				// Store on the end flag and clear the carry-in.
         //if( tid==1 ) printf("%d = %d\n", rows[i], rows[i+1]);
 				if(rows[i] != rows[i + 1])
         {
-					carryIn = identity;
-					dest_global[rows[i]*MGPU_BC+lane_id] = x2;
-            //if( tid==1 )//x2[j]>0.f )
-            //  printf("cta %d,%d,%d,%d,%d:%f\n", tid, i, j, rows[i],rows[i+1],x2[j]);
+					//carryInPrev = identity;
+					dest_global[rows[i]*MGPU_BC+lane_id+(blockIdx.z<<5)] = x2;
+            if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
+              printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
 				}
       }
+		T carryOut = rows[MGPU_TB-1]!=rows[MGPU_TB] ? 0 : localScan[MGPU_TB-1];
+    if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
+
 		// Store the carry-out for the entire CTA to global memory.
-		if(slab==32)
+		if(slab==28)
     {
-      if(tid<32)
-        carryOut_global[block*MGPU_BC+tid] = carryOut;
+      __syncthreads();
+      if( tid<224 && rows[MGPU_TB-1]==rows[MGPU_TB] )
+        dest_global[rows[MGPU_TB]*MGPU_BC+lane_id+(blockIdx.z<<5)] += carryOut;
+      if(tid>=224)
+        carryOut_global[block*MGPU_BC+(tid%32)+(blockIdx.z<<5)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
+      
 		}
     else
       return carryOut;

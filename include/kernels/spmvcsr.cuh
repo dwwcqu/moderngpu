@@ -9,7 +9,7 @@
  *       notice, this list of conditions and the following disclaimer in the
  *       documentation and/or other materials provided with the distribution.
  *     * Neither the name of the NVIDIA CORPORATION nor the
- B*       names of its contributors may be used to endorse or promote products
+ *       names of its contributors may be used to endorse or promote products
  *       derived from this software without specific prior written permission.
  * 
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" 
@@ -89,6 +89,8 @@ struct CTASpmmLoad {
       int col_all = __shfl(columns[   0], ii+slab);
       T   val_all = __shfl(matrixData[0], ii+slab);
     	data[ii]    = val_all*__ldg(vec_global+col_all);
+      if( data[ii]!=0.f )
+        printf("tid %d: %f\n", tid, data[ii]);
     }
 
 		// Clear out the out-of-range inputs. 
@@ -131,15 +133,17 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
 	union Shared {
 		int csr[NV + 1];
-		typename SegReduce::Storage segReduceStorage;
 	};
 	__shared__ Shared shared;
+  __shared__ int    shared_csr2[NT>>4]; // 2x number of warps
+  __shared__ float  shared_storage[NT];
 
 	int tid = threadIdx.x;
 	int block = blockIdx.x;
 	int gid = NV * block;
 	int count2 = min(NV, nz - gid);
   int lane_id = tid & (32 - 1);
+  int warp_id = tid>>5;
 
 	// Retrieve the left and right row limits.
 	int limit0 = __ldg(limits_global+block);
@@ -154,8 +158,6 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   range = DeviceShiftRange(limit0, limit1);
   int numRows = range.end - range.begin;
 
-  //if( tid==0 ) printf("%d,%d,%d,%d\n", block, limit0, limit1, numRows);
-
   // Load the CSR interval.
   DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
       shared.csr);
@@ -169,6 +171,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   {
     columns[0]    = __ldg(cols_global+tid)<<6;
     matrixData[0] = __ldg(matrix_global+tid);
+    //printf("tid:%d,col:%d,val:%f\n", tid, columns[0]>>6, matrixData[0]);
   }
   else
   {
@@ -178,46 +181,47 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
   T carryIn = 0.f;
   T carryOut;
-    if( lane_id==0 )
-      terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid,
-          gid, range.flushLast, rows, rowStarts);
-    #pragma unroll
-    for( int i=0; i<MGPU_TB+1; i++ )
-      rows[i] = __shfl(rows[i], 0);
-    #pragma unroll
-    for( int i=0; i<MGPU_TB; i++ )
-      rowStarts[i] = __shfl(rowStarts[i], 0);
-    terms.tidDelta = __shfl(terms.tidDelta, 0);
-    printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
-    printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
 
+  //for( int slab=0; slab<4; slab+=MGPU_TB )
   for( int slab=0; slab<32; slab+=MGPU_TB )
   {
     // Removed Indirect load case
     // This is a direct load so we don't have a data-dependency on the
     // limits.
     SpmmLoad::LoadDirectSpmm(count2, tid,
-        matrixData, columns, vec_global+slab+(blockIdx.z<<5), 
+        matrixData, columns, vec_global+lane_id+(blockIdx.z<<5), 
         slab, identity, mulOp, data);
+    //if( threadIdx.x==0 && blockIdx.z==0 ) printf("%d:%d,%d,%d,%d,%d\n", blockIdx.x, shared_csr2[0], shared_csr2[1], shared_csr2[2], shared_csr2[3], shared_csr2[4]);
 
     // Flatten CSR->COO and return the segmented scan terms.
-    //if( lane_id==0 )
-    //  terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr, numRows, tid+slab,
-    //      gid, range.flushLast, rows, rowStarts);
+    //terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr,
+    //    numRows, tid, gid, range.flushLast, rows, rowStarts);
+    terms = DeviceSegReducePrepareSpmm<NT, MGPU_TB>(shared.csr, shared_csr2,
+        numRows, warp_id<<5, tid, gid, range.flushLast, rows, rowStarts);
+    /*if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 )
+    {
+      printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
+      printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
+    }*/
     #pragma unroll
     for( int i=0; i<MGPU_TB+1; i++ )
-      rows[i] = __shfl(rows[i], 0);
+      rows[i] = __shfl(rows[i], slab>>2);
     #pragma unroll
     for( int i=0; i<MGPU_TB; i++ )
-      rowStarts[i] = __shfl(rowStarts[i], 0);
-    terms.tidDelta = __shfl(terms.tidDelta, 0);
+      rowStarts[i] = __shfl(rowStarts[i], slab>>2);
+    terms.tidDelta = __shfl(terms.tidDelta, slab>>2);
+    if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 )
+    {
+      printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
+      printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
+    }
 
     // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.
     carryOut = SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
         range.begin, block, tid, lane_id, data, 
-        dest_global+slab+(blockIdx.z<<5), carryOut_global+(blockIdx.z<<5), 
-        carryIn, slab, identity, addOp, shared.segReduceStorage);
+        dest_global+(blockIdx.z<<5), carryOut_global+(blockIdx.z<<5), 
+        carryIn, slab, identity, addOp, shared_storage);
     carryIn  = carryOut;
   }
 }
