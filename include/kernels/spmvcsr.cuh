@@ -171,8 +171,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   {
     columns[0]    = __ldg(cols_global+gid+tid)<<6;
     matrixData[0] = __ldg(matrix_global+gid+tid);
-    //if( blockIdx.x==1 && blockIdx.z==0 )
-    //  printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
+    if( blockIdx.x==1 && blockIdx.z==0 )
+      printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
   }
   else
   {
@@ -280,7 +280,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   dim3 mgpu_nt, mgpu_nb;
   mgpu_nt.x = nt;
   mgpu_nt.y = 1;
-  mgpu_nt.z = 2;
+  mgpu_nt.z = 1;
 	mgpu_nb.x = MGPU_DIV_UP(nz, NV);
   mgpu_nb.y = 1;
   mgpu_nb.z = B_ncols/32;
@@ -291,6 +291,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		
 	// Evaluate the Spmv product.
 	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
+  printf("NT:%d, TB:%d\n",nt,tb);
   switch( tb )
 	{
     case( 4 ):

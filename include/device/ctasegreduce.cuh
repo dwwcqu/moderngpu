@@ -242,7 +242,7 @@ struct CTASegReduce {
 				if(rows[i] != rows[i + 1])
         {
 					//carryInPrev = identity;
-					dest_global[rows[i]<<6+lane_id] = x2;
+					dest_global[(rows[i]<<6)+lane_id] = x2;
           //  if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
           //    printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
 				}
@@ -255,9 +255,9 @@ struct CTASegReduce {
     {
       __syncthreads();
       if( tid<224 && rows[MGPU_TB-1]==rows[MGPU_TB] )
-        dest_global[rows[MGPU_TB]<<6+lane_id] += carryOut;
+        dest_global[(rows[MGPU_TB]<<6)+lane_id] += carryOut;
       if(tid>=224)
-        carryOut_global[block<<6+(tid%32)] = carryOut;
+        carryOut_global[(block<<6)+(tid%32)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
       
 		}

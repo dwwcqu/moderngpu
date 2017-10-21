@@ -784,7 +784,7 @@ MGPU_HOST void SpmmCsrBinary(MatrixIt matrix_global, ColsIt cols_global,
 	int nz, CsrIt csr_global, int numRows, VecIt vec_global, 
 	bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp, 
 	const int B_ncols, LimIt limits_global, DestIt carryin_global, 
-  DestIt carryout_global, CudaContext& context);
+  DestIt carryout_global, const int tb, const int nt, CudaContext& context);
 
 template<typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
 	typename DestIt, typename T, typename AddOp>
