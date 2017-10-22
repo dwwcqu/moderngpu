@@ -82,13 +82,15 @@ struct CTASpmmLoad {
 		MatrixIt matrixData[VT], ColumnsIt columns[VT], VecIt vec_global, 
     const int slab, T identity, MulOp mulOp, T data[MGPU_TB] ) {
 
+    int col_all[MGPU_TB];
+    T   val_all[MGPU_TB];
 		// Use ldg to load vector data in strided order.
     #pragma unroll
     for( int ii=0; ii<MGPU_TB; ii++ )
     {
-      int col_all = __shfl(columns[   0], ii+slab);
-      T   val_all = __shfl(matrixData[0], ii+slab);
-    	data[ii]    = val_all*__ldg(vec_global+col_all);
+      col_all[ii] = __shfl(columns[   0], ii+slab);
+      val_all[ii] = __shfl(matrixData[0], ii+slab);
+    	data[ii]    = val_all[ii]*__ldg(vec_global+col_all[ii]);
       //if( data[ii]!=0.f && blockIdx.x==1 && blockIdx.z==0 )
       //  printf("tid %d: %f\n", tid, data[ii]);
     }
