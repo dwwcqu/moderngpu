@@ -251,18 +251,17 @@ struct CTASegReduce {
     //if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
 
 		// Store the carry-out for the entire CTA to global memory.
-		if(slab==28)
+		if(slab==32-MGPU_TB)
     {
       __syncthreads();
-      if( tid<224 && rows[MGPU_TB-1]==rows[MGPU_TB] )
+      if( tid<NT-32 && rows[MGPU_TB-1]==rows[MGPU_TB] )
         dest_global[(rows[MGPU_TB]<<6)+lane_id] += carryOut;
-      if(tid>=224)
+      if(tid>=NT-32)
         carryOut_global[(block<<6)+(tid%32)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
       
 		}
-    else
-      return carryOut;
+    return carryOut;
 		/*} else {
 			// All partials fit in shared memory. Add carry-in to each thread-
 			// local scan value.

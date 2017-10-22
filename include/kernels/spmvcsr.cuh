@@ -68,8 +68,8 @@ struct SpmmTuningNormal {
 // Loads matrix values and column indices and gathers vector values. Finds 
 // products and transposes terms into register output in thread order.
 
-template<int NT, int VT, bool LoadLeft, bool HalfCapacity, typename T,
-	typename MulOp>
+template<int NT, int MGPU_TB, int VT, bool LoadLeft, bool HalfCapacity, 
+  typename T, typename MulOp>
 struct CTASpmmLoad {
 	enum {
 		NV = NT * VT,
@@ -77,7 +77,7 @@ struct CTASpmmLoad {
 	};
 
   // Note: count2 = how many nnz we need to load in terms of tid
-	template<int MGPU_TB, typename MatrixIt, typename ColumnsIt, typename VecIt>
+	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
 	MGPU_DEVICE static void LoadDirectSpmm(int count2, int tid,
 		MatrixIt matrixData[VT], ColumnsIt columns[VT], VecIt vec_global, 
     const int slab, T identity, MulOp mulOp, T data[MGPU_TB] ) {
@@ -113,26 +113,24 @@ struct CTASpmmLoad {
 	}
 };
 
-template<int MGPU_TB, int NT, typename Tuning, bool Indirect, bool LoadLeft, 
+template<int MGPU_TB, int NT, bool Indirect, bool LoadLeft, 
   typename MatrixIt, 
 	typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt, 
 	typename DestIt, typename T, typename MulOp, typename AddOp>
-MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
+__global__ void KernelSpmmCsr(MatrixIt matrix_global,
 	ColsIt cols_global, int nz, CsrIt csr_global, SourcesIt sources_global, 
 	VecIt vec_global, CsrIt limits_global, DestIt dest_global,
 	T* carryOut_global, T identity, MulOp mulOp, AddOp addOp, const int B_ncols) {
 
-	typedef MGPU_LAUNCH_PARAMS Params;
-	const int VT = 1;
-	const int NV = NT * VT;
-	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
+	const bool HalfCapacity = false;
 
 	typedef CTAReduce<NT, AddOp> FastReduce;
 	typedef CTASegReduce<NT, MGPU_TB, HalfCapacity, T, AddOp> SegReduce;
-  typedef CTASpmmLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmmLoad;
+  typedef CTASpmmLoad<NT, MGPU_TB, 1, LoadLeft, HalfCapacity, T, MulOp> 
+    SpmmLoad;
 
 	union Shared {
-		int csr[NV + 1];
+		int csr[NT + 1];
 	};
 	__shared__ Shared shared;
   __shared__ int    shared_csr2[NT>>4]; // 2x number of warps
@@ -140,8 +138,8 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
 
 	int tid = threadIdx.x;
 	int block = blockIdx.x;
-	int gid = NV * block;
-	int count2 = min(NV, nz - gid);
+	int gid = NT * block;
+	int count2 = min(NT, nz - gid);
   int lane_id = tid & (32 - 1);
   int warp_id = tid>>5;
 
@@ -159,20 +157,20 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
   int numRows = range.end - range.begin;
 
   // Load the CSR interval.
-  DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+  DeviceGlobalToSharedLoop<NT, 1>(numRows, csr_global + range.begin, tid, 
       shared.csr);
   __syncthreads();
 
   // Load column indices directly from cols_global.
   // Load values into stridedData.
-  int columns[VT];
-  T matrixData[VT];
+  int columns[1];
+  T matrixData[1];
 	if( tid < count2 )
   {
     columns[0]    = __ldg(cols_global+gid+tid)<<6;
     matrixData[0] = __ldg(matrix_global+gid+tid);
-    if( blockIdx.x==1 && blockIdx.z==0 )
-      printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
+    //if( blockIdx.x==1 && blockIdx.z==0 )
+    //  printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
   }
   else
   {
@@ -189,7 +187,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmmCsr(MatrixIt matrix_global,
     // Removed Indirect load case
     // This is a direct load so we don't have a data-dependency on the
     // limits.
-    SpmmLoad::LoadDirectSpmm<MGPU_TB>(count2, tid,
+    SpmmLoad::LoadDirectSpmm(count2, tid,
         matrixData, columns, vec_global+lane_id+(blockIdx.z<<5), 
         slab, identity, mulOp, data);
     //if( threadIdx.x==0 && blockIdx.z==0 ) printf("%d:%d,%d,%d,%d,%d\n", blockIdx.x, shared_csr2[0], shared_csr2[1], shared_csr2[2], shared_csr2[3], shared_csr2[4]);
@@ -275,65 +273,64 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   CudaContext& context) {
 
 	int2 launch = Tuning::GetLaunchParams(context);
-	int NV = nt;
 
   dim3 mgpu_nt, mgpu_nb;
   mgpu_nt.x = nt;
   mgpu_nt.y = 1;
   mgpu_nt.z = 1;
-	mgpu_nb.x = MGPU_DIV_UP(nz, NV);
+	mgpu_nb.x = MGPU_DIV_UP(nz, nt);
   mgpu_nb.y = 1;
   mgpu_nb.z = B_ncols/32;
 
 	// Use upper-bound binary search to partition the CSR structure into tiles.
-	PartitionCsrSegReducePrealloc(nz, NV, csr_global, numRows, numRows2_global, 
+	PartitionCsrSegReducePrealloc(nz, nt, csr_global, numRows, numRows2_global, 
       mgpu_nb.x + 1, limits_global, context);
 		
 	// Evaluate the Spmv product.
 	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks*MGPU_BC);
-  printf("NT:%d, TB:%d\n",nt,tb);
+  //printf("NT:%d, TB:%d, Bncols:%d, %d,%d,%d %d,%d,%d\n",nt,tb,B_ncols,mgpu_nt.x,mgpu_nt.y,mgpu_nt.z,mgpu_nb.x,mgpu_nb.y,mgpu_nb.z);
   switch( tb )
 	{
-    case( 4 ):
+    case 4:
       switch( nt )
       {
-        case( 32 ):
-        KernelSpmmCsr<4, 32, Tuning, Indirect, LoadLeft>
+        case 32:
+        KernelSpmmCsr<4, 32, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 64 ):
-        KernelSpmmCsr<4, 64, Tuning, Indirect, LoadLeft>
+        case 64:
+        KernelSpmmCsr<4, 64, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 128 ):
-        KernelSpmmCsr<4, 128, Tuning, Indirect, LoadLeft>
+        case 128:
+        KernelSpmmCsr<4, 128, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 256 ):
-        KernelSpmmCsr<4, 256, Tuning, Indirect, LoadLeft>
+        case 256:
+        KernelSpmmCsr<4, 256, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 512 ):
-        KernelSpmmCsr<4, 512, Tuning, Indirect, LoadLeft>
+        case 512:
+        KernelSpmmCsr<4, 512, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 1024 ):
-        KernelSpmmCsr<4, 1024, Tuning, Indirect, LoadLeft>
+        case 1024:
+        KernelSpmmCsr<4, 1024, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
@@ -341,45 +338,46 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
           break;
        }
       break;
-    case( 8 ):
+    case 8:
       switch( nt )
       {
-        case( 32 ):
-        KernelSpmmCsr<8, 32, Tuning, Indirect, LoadLeft>
-          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
-          cols_global, nz, csr_global, sources_global, vec_global, 
-          limits_global, dest_global, carryin_global, identity, 
-          mulOp, addOp, B_ncols);
-        case( 64 ):
-        KernelSpmmCsr<8, 64, Tuning, Indirect, LoadLeft>
+        case 32:
+        KernelSpmmCsr<8, 32, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 128 ):
-        KernelSpmmCsr<8, 128, Tuning, Indirect, LoadLeft>
+        case 64:
+        KernelSpmmCsr<8, 64, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 256 ):
-        KernelSpmmCsr<8, 256, Tuning, Indirect, LoadLeft>
+        case 128:
+        KernelSpmmCsr<8, 128, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 512 ):
-        KernelSpmmCsr<8, 512, Tuning, Indirect, LoadLeft>
+        case 256:
+        KernelSpmmCsr<8, 256, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 1024 ):
-        KernelSpmmCsr<8, 1024, Tuning, Indirect, LoadLeft>
+        case 512:
+        KernelSpmmCsr<8, 512, Indirect, LoadLeft>
+          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+          cols_global, nz, csr_global, sources_global, vec_global, 
+          limits_global, dest_global, carryin_global, identity, 
+          mulOp, addOp, B_ncols);
+          break;
+        case 1024:
+        KernelSpmmCsr<8, 1024, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
@@ -387,45 +385,46 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
           break;
       }
       break;
-    case( 16 ):
+    case 16:
       switch( nt )
       {
-        case( 32 ):
-        KernelSpmmCsr<16, 32, Tuning, Indirect, LoadLeft>
-          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
-          cols_global, nz, csr_global, sources_global, vec_global, 
-          limits_global, dest_global, carryin_global, identity, 
-          mulOp, addOp, B_ncols);
-        case( 64 ):
-        KernelSpmmCsr<16, 64, Tuning, Indirect, LoadLeft>
+        case 32:
+        KernelSpmmCsr<16, 32, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 128 ):
-        KernelSpmmCsr<16, 128, Tuning, Indirect, LoadLeft>
+        case 64:
+        KernelSpmmCsr<16, 64, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 256 ):
-        KernelSpmmCsr<16, 256, Tuning, Indirect, LoadLeft>
+        case 128:
+        KernelSpmmCsr<16, 128, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 512 ):
-        KernelSpmmCsr<16, 512, Tuning, Indirect, LoadLeft>
+        case 256:
+        KernelSpmmCsr<16, 256, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 1024 ):
-        KernelSpmmCsr<16, 1024, Tuning, Indirect, LoadLeft>
+        case 512:
+        KernelSpmmCsr<16, 512, Indirect, LoadLeft>
+          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+          cols_global, nz, csr_global, sources_global, vec_global, 
+          limits_global, dest_global, carryin_global, identity, 
+          mulOp, addOp, B_ncols);
+          break;
+        case 1024:
+        KernelSpmmCsr<16, 1024, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
@@ -433,45 +432,46 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
           break;
       }
       break;
-    case( 32 ):
+    case 32:
       switch( nt )
       {
-        case( 32 ):
-        KernelSpmmCsr<32, 32, Tuning, Indirect, LoadLeft>
-          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
-          cols_global, nz, csr_global, sources_global, vec_global, 
-          limits_global, dest_global, carryin_global, identity, 
-          mulOp, addOp, B_ncols);
-        case( 64 ):
-        KernelSpmmCsr<32, 64, Tuning, Indirect, LoadLeft>
+        case 32:
+        KernelSpmmCsr<32, 32, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 128 ):
-        KernelSpmmCsr<32, 128, Tuning, Indirect, LoadLeft>
+        case 64:
+        KernelSpmmCsr<32, 64, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 256 ):
-        KernelSpmmCsr<32, 256, Tuning, Indirect, LoadLeft>
+        case 128:
+        KernelSpmmCsr<32, 128, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 512 ):
-        KernelSpmmCsr<32, 512, Tuning, Indirect, LoadLeft>
+        case 256:
+        KernelSpmmCsr<32, 256, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
           mulOp, addOp, B_ncols);
           break;
-        case( 1024 ):
-        KernelSpmmCsr<32, 1024, Tuning, Indirect, LoadLeft>
+        case 512:
+        KernelSpmmCsr<32, 512, Indirect, LoadLeft>
+          <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+          cols_global, nz, csr_global, sources_global, vec_global, 
+          limits_global, dest_global, carryin_global, identity, 
+          mulOp, addOp, B_ncols);
+          break;
+        case 1024:
+        KernelSpmmCsr<32, 1024, Indirect, LoadLeft>
           <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
           cols_global, nz, csr_global, sources_global, vec_global, 
           limits_global, dest_global, carryin_global, identity, 
