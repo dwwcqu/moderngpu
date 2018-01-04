@@ -61,6 +61,16 @@ struct SpmvTuningIndirect {
 };
 
 template<size_t Size, bool LoadLeft>
+struct SpmspvTuningIndirect {
+	enum { Indirect = true };
+	typedef LaunchBox<
+		SegReduceTuning<128, 11, 0, false, false>,
+		SegReduceTuning<128, 11, 0, true, false>,
+		SegReduceTuning<128, 7, 0, true, false>
+	> Tuning;
+};
+
+template<size_t Size, bool LoadLeft>
 struct SpmvTuningPreprocess {
 	enum { Indirect = false };
 	typedef LaunchBox<
@@ -302,7 +312,7 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	// Use upper-bound binary search to partition the CSR structure into tiles.
 	MGPU_MEM(int) limitsDevice = PartitionCsrSegReduce(nz, NV, csr_global,
 		numRows, numRows2_global, numBlocks + 1, context);
-		
+  std::cout << "Before Spmv kernel execution\n";		
 	// Evaluate the Spmv product.
 	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
 	KernelSpmvCsr<Tuning, Indirect, LoadLeft>
@@ -311,10 +321,46 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		limitsDevice->get(), dest_global, carryOutDevice->get(), identity, 
 		mulOp, addOp);
 	MGPU_SYNC_CHECK("KernelSpmvCsr");
+  cudaDeviceSynchronize();
+  std::cout << "After Spmv kernel execution\n";		
 
 	// Add the carry-in values.
 	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
 		carryOutDevice->get(), identity, addOp, context);
+}
+
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename SourcesValIt,
+	typename DestIt, typename DestValIt, typename T, typename MulOp>
+MGPU_HOST void SpmspvCsrInner(MatrixIt matrix_global, ColsIt cols_global, 
+  int nz, CsrIt csr_global, SourcesIt sources_indices, 
+  SourcesValIt sources_global, int sources_nvals, const int* numRows2_global, 
+  DestIt dest_indices, DestValIt dest_global, int* dest_nvals,
+	T identity, MulOp mulOp, CudaContext& context) {
+
+	int2 launch = Tuning::GetLaunchParams(context);
+	int NV = launch.x * launch.y;
+
+	int numBlocks = MGPU_DIV_UP(nz, NV);
+
+	// Use upper-bound binary search to partition the CSR structure into tiles.
+	MGPU_MEM(int) limitsDevice = PartitionCsrSegReduce(nz, NV, csr_global,
+		sources_nvals, numRows2_global, numBlocks + 1, context);
+  std::cout << "Before Spmspv kernel execution\n";		
+	// Evaluate the Spmv product.
+	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
+	/*KernelSpmspvCsr<Tuning, Indirect, LoadLeft>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
+		cols_global, nz, csr_global, sources_indices, sources_global, 
+		limitsDevice->get(), dest_indices, dest_global, carryOutDevice->get(), 
+    identity, mulOp);*/
+	MGPU_SYNC_CHECK("KernelSpmspvCsr");
+  cudaDeviceSynchronize();
+  std::cout << "After Spmspv kernel execution\n";		
+
+	// Add the carry-in values.
+  //SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,
+	//	carryOutDevice->get(), identity, addOp, context);
 }
 
 
@@ -355,6 +401,46 @@ MGPU_HOST void SpmvCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	}
 }
 
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename SourcesValIt, 
+	typename DestIt, typename DestValIt, typename T, typename MulOp>
+MGPU_HOST void SpmspvCsrHost(MatrixIt matrix_global, ColsIt cols_global, int nz,
+	CsrIt csr_global, SourcesIt sources_indices, SourcesValIt sources_global, 
+  int sources_nvals, bool supportEmpty, DestIt dest_indices, 
+  DestValIt dest_global, int* dest_nvals, T identity, MulOp mulOp,
+	CudaContext& context) {
+		
+	if(supportEmpty) {
+    std::cout << "Error: supportEmpty is not supported yet!\n";
+
+		// Allocate space for CSR2 and Sources2.
+		/*MGPU_MEM(int) csr2Device = context.Malloc<int>(numRows + 1);
+		MGPU_MEM(int) sources2Device;
+		if(Indirect) sources2Device = context.Malloc<int>(numRows);
+
+		// Strip the empties from CSR and store in CSR2.
+		CsrStripEmpties<Indirect>(nz, csr_global, sources_global, numRows,
+			csr2Device->get(), Indirect ? sources2Device->get() : (int*)0, 
+			(int*)0, context);
+
+		// Run the Spmv in the CSR2 coordinate space.
+		MGPU_MEM(T) destDevice = context.Malloc<T>(numRows);
+		SpmvCsrInner<Tuning, Indirect, LoadLeft>(matrix_global, cols_global, nz,
+			csr2Device->get(), Indirect ? sources2Device->get() : (const int*)0,
+			-1, csr2Device->get() + numRows, vec_global,
+			destDevice->get(), identity, mulOp, addOp, context);
+		
+		// Transform into the CSR space with BulkInsert.
+		CsrBulkInsert(csr2Device->get(), numRows, destDevice->get(), identity,
+			dest_global, context);*/
+
+	} else {
+		SpmspvCsrInner<Tuning, Indirect, LoadLeft>(matrix_global, cols_global, nz,
+			csr_global, sources_indices, sources_global, sources_nvals, (const int*)0,
+			dest_indices, dest_global, dest_nvals, identity, mulOp, context);
+	}
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Spmv host functions
 
@@ -388,6 +474,19 @@ MGPU_HOST void SpmvCsrBinary(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		identity, mulOp, addOp, context);
 }
 
+template<typename MatrixIt, typename ColsIt, typename CsrIt, typename VecIt,
+	typename DestIt, typename T, typename MulOp, typename AddOp, typename Index>
+MGPU_HOST void GrbSpmvCsrBinary(MatrixIt matrix_global, ColsIt cols_global, 
+  Index nz, CsrIt csr_global, Index numRows, VecIt vec_global, 
+  bool supportEmpty, DestIt dest_global, T identity, MulOp mulOp, AddOp addOp,
+	CudaContext& context) {
+			
+	typedef typename SpmvTuningNormal<sizeof(T), true>::Tuning Tuning;
+	SpmvCsrHost<Tuning, false, true>(matrix_global, cols_global, nz, csr_global,
+		(const int*)0, numRows, vec_global, supportEmpty, dest_global, 
+		identity, mulOp, addOp, context);
+}
+
 template<typename ColsIt, typename CsrIt, typename SourcesIt, typename VecIt,
 	typename DestIt, typename T, typename AddOp>
 MGPU_HOST void SpmvCsrIndirectUnary(ColsIt cols_global, int nz,
@@ -412,6 +511,21 @@ MGPU_HOST void SpmvCsrIndirectBinary(MatrixIt matrix_global, ColsIt cols_global,
 	SpmvCsrHost<Tuning, true, true>(matrix_global, cols_global, nz, csr_global,
 		sources_global, numRows, vec_global, supportEmpty, dest_global, 
 		identity, mulOp, addOp, context);
+}
+
+template<typename MatrixIt, typename ColsIt, typename CsrIt, typename SourcesIt,
+	typename SourcesValIt, typename DestIt, typename DestValIt, typename T, 
+  typename MulOp>
+MGPU_HOST void SpmspvCsrIndirectBinary(MatrixIt matrix_global, 
+  ColsIt cols_global, int nz, CsrIt csr_global, int A_nrows,
+  SourcesIt sources_indices, SourcesValIt sources_global, int sources_nvals, 
+  bool supportEmpty, DestIt dest_indices, DestValIt dest_global, 
+  int* dest_nvals, T identity, MulOp mulOp, CudaContext& context) {
+
+	typedef typename SpmspvTuningIndirect<sizeof(T), true>::Tuning Tuning;
+	SpmspvCsrHost<Tuning, true, true>(matrix_global, cols_global, nz, csr_global,
+		sources_indices, sources_global, sources_nvals, supportEmpty, 
+    dest_indices, dest_global, dest_nvals, identity, mulOp, context);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
