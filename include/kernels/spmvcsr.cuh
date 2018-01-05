@@ -246,8 +246,10 @@ struct CTASpmspvLoad {
 		// Load source offsets from sources_global into smem.
 		DeviceGlobalToSharedLoop<NT, VT>(numRows, sources_indices + startRow,
 			tid, storage.sources);
+    if( tid<16 ) printf("%d: %d indices\n", tid, storage.sources[tid]);
 		DeviceGlobalToSharedLoop<NT, VT>(numRows, sources_global  + startRow,
 			tid, storage2.values);
+    if( tid<16 ) printf("%d: %f values\n", tid, storage2.values[tid]);
 
 		// Compute the offset of each element within its row.
 		int indices[VT];
@@ -255,11 +257,15 @@ struct CTASpmspvLoad {
 		#pragma unroll
 		for(int i = 0; i < VT; ++i) {
 			int index = VT * tid + i;
-			int rowOffset = gid + index - rowStarts[i];
-			int source = storage.sources[rows[i]];
-      T   value  = storage2.values[rows[i]];
-			indices[i] = source + rowOffset;
-      values [i] = value;
+      //if( index<numRows )
+      //{
+			  int rowOffset = gid + index - rowStarts[i];
+			  int source = storage.sources[rows[i]];
+        T   value  = storage2.values[rows[i]];
+        if( tid<16 ) printf("%d %d: %d %f\n", tid, i, source, value);
+			  indices[i] = source + rowOffset;
+        values [i] = value;
+      //}
 		}
 		__syncthreads();
 
@@ -271,10 +277,17 @@ struct CTASpmspvLoad {
     DeviceThreadToShared<VT>(values, tid, storage2.values);
     DeviceSharedToReg<NT, VT>(storage2.values, tid, values);
 
+    //for(int i = 0; i < VT; ++i)
+    //{
+      if( tid<16 ) printf("%d: %d indices\n", tid, indices[0]);
+      if( tid<16 ) printf("%d: %f values\n",  tid, values [0]);
+    //}
+
 		// Gather columns from cols_global.
 		int columns[VT];
 		DeviceGatherDefault<NT, VT>(count2, cols_global, indices, tid, 
 			columns, 0);
+    if( tid<16 ) printf("%d: %d columns\n", tid, columns[0]);
 
 		// Gather data into stridedData.
 		T matrixData[VT];
@@ -296,7 +309,7 @@ struct CTASpmspvLoad {
 				mulOp(matrixData[i], values[i]) : values[i];
 
     // Write to global memory in strided order
-    DeviceRegToGlobal<NT, VT>(count2, indices, tid, dest_indices, false);
+    DeviceRegToGlobal<NT, VT>(count2, columns, tid, dest_indices, false);
     DeviceRegToGlobal<NT, VT>(count2, values,  tid, dest_global,  false);
     /*#pragma unroll
     for(int i = 0; i < VT; ++i)
@@ -435,6 +448,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmspvCsr(MatrixIt matrix_global,
 	int block = blockIdx.x;
 	int gid = NV * block;
 	int count2 = min(NV, nz - gid);
+  if( tid==0 && block==0 ) printf("count2: %d\n", count2);
 
 	// Retrieve the left and right row limits.
 	int limit0 = limits_global[block];
