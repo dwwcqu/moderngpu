@@ -208,6 +208,113 @@ struct CTASpmvLoad {
 	}
 };
 
+template<int NT, int VT, bool LoadLeft, bool HalfCapacity, typename T,
+	typename MulOp>
+struct CTASpmspvLoad {
+	enum {
+		NV = NT * VT,
+		Capacity = HalfCapacity ? (NV / 2) : NV
+	};
+	//typedef CTASegReduce<NT, VT, HalfCapacity, T, MulOp> SegReduce;
+	
+	union Storage {
+		int sources[NV];
+		T data[Capacity];
+		//typename SegReduce::Storage segReduceStorage;
+	};
+
+  union Storage2 {
+    T values[NV];
+  };
+
+	template<typename MatrixIt, typename ColumnsIt, typename VecIt>
+	MGPU_DEVICE static void LoadDirect(int count2, int tid, int gid, 
+		MatrixIt matrix_global, ColumnsIt cols_global, VecIt vec_global, 
+		T identity, MulOp mulOp, T data[VT], Storage& storage) {
+	}
+
+	template<typename SourcesIt, typename SourcesValIt, typename DestIt, 
+    typename DestValIt, typename MatrixIt, typename ColumnsIt>
+	MGPU_DEVICE static void LoadIndirect(int count2, int tid, int gid, 
+		int numRows, int startRow, const int rows[VT], const int rowStarts[VT],
+		SourcesIt sources_indices, SourcesValIt sources_global, 
+    MatrixIt matrix_global, ColumnsIt cols_global, 
+    DestIt dest_indices, DestValIt dest_global,
+    //int indices[VT], T data[VT], 
+    T identity, MulOp mulOp, Storage& storage, Storage2& storage2) {
+			
+		// Load source offsets from sources_global into smem.
+		DeviceGlobalToSharedLoop<NT, VT>(numRows, sources_indices + startRow,
+			tid, storage.sources);
+		DeviceGlobalToSharedLoop<NT, VT>(numRows, sources_global  + startRow,
+			tid, storage2.values);
+
+		// Compute the offset of each element within its row.
+		int indices[VT];
+    T   values [VT];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i) {
+			int index = VT * tid + i;
+			int rowOffset = gid + index - rowStarts[i];
+			int source = storage.sources[rows[i]];
+      T   value  = storage2.values[rows[i]];
+			indices[i] = source + rowOffset;
+      values [i] = value;
+		}
+		__syncthreads();
+
+		// Transpose indices through shared memory into strided order.
+		DeviceThreadToShared<VT>(indices, tid, storage.sources);
+		DeviceSharedToReg<NT, VT>(storage.sources, tid, indices);
+
+    // Transpose values through shared memory into strided order.
+    DeviceThreadToShared<VT>(values, tid, storage2.values);
+    DeviceSharedToReg<NT, VT>(storage2.values, tid, values);
+
+		// Gather columns from cols_global.
+		int columns[VT];
+		DeviceGatherDefault<NT, VT>(count2, cols_global, indices, tid, 
+			columns, 0);
+
+		// Gather data into stridedData.
+		T matrixData[VT];
+		if(LoadLeft)
+			DeviceGatherDefault<NT, VT>(count2, matrix_global, indices, 
+				tid, matrixData, identity);						
+		
+		// Use ldg to load vector data in strided order.
+		/*T vecData[VT];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+			vec_data[index] = ldg(sources_global + columns[i]);*/
+
+		// Multiply matrix and vector values together.
+		T stridedData[VT];
+		#pragma unroll
+		for(int i = 0; i < VT; ++i)
+			stridedData[i] = LoadLeft ? 
+				mulOp(matrixData[i], values[i]) : values[i];
+
+    // Write to global memory in strided order
+    DeviceRegToGlobal<NT, VT>(count2, indices, tid, dest_indices, false);
+    DeviceRegToGlobal<NT, VT>(count2, values,  tid, dest_global,  false);
+    /*#pragma unroll
+    for(int i = 0; i < VT; ++i)
+      dest_indices[i*/
+
+		// Transpose from strided to thread order.
+		/*if(HalfCapacity)
+			HalfSmemTranspose<NT, VT>(stridedData, tid, storage.data, data);
+		else {
+      DeviceRegToShared<NT, VT>(indices, tid, storage.sources);
+      DeviceSharedToThread<VT>(storage.sources, tid, indices);
+
+			DeviceRegToShared<NT, VT>(stridedData, tid, storage.data);
+			DeviceSharedToThread<VT>(storage.data, tid, data);
+		}*/
+	}
+};
+
 ////////////////////////////////////////////////////////////////////////////////
 // KernelSpmvCsr
 
@@ -293,6 +400,75 @@ MGPU_LAUNCH_BOUNDS void KernelSpmvCsr(MatrixIt matrix_global,
 		identity, addOp, shared.segReduceStorage);
 }
 
+template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
+	typename ColsIt, typename CsrIt, typename SourcesIt, typename SourcesValIt,
+  typename DestIt, typename DestValIt, typename T, typename MulOp>
+MGPU_LAUNCH_BOUNDS void KernelSpmspvCsr(MatrixIt matrix_global,
+	ColsIt cols_global, int nz, CsrIt csr_global, SourcesIt sources_indices, 
+	SourcesValIt sources_global, const int* limits_global, DestIt dest_indices, 
+  DestValIt dest_global, int* dest_nvals, T identity, MulOp mulOp) {
+
+	typedef MGPU_LAUNCH_PARAMS Params;
+	const int NT = Params::NT;
+	const int VT = Params::VT;
+	const int NV = NT * VT;
+	const bool HalfCapacity = (sizeof(T) > sizeof(int)) && Params::HalfCapacity;
+
+	//typedef CTAReduce<NT, AddOp> FastReduce;
+	//typedef CTASegReduce<NT, VT, HalfCapacity, T, AddOp> SegReduce;
+	typedef CTASpmspvLoad<NT, VT, LoadLeft, HalfCapacity, T, MulOp> SpmspvLoad;
+
+	union Shared {
+		int csr[NV + 1];
+		//typename SegReduce::Storage segReduceStorage;
+		typename SpmspvLoad::Storage spmspvLoadStorage;
+	};
+
+  union Shared2 {
+    typename SpmspvLoad::Storage2 spmspvLoadStorage;
+  };
+
+	__shared__ Shared  shared;
+  __shared__ Shared2 shared2;
+
+	int tid = threadIdx.x;
+	int block = blockIdx.x;
+	int gid = NV * block;
+	int count2 = min(NV, nz - gid);
+
+	// Retrieve the left and right row limits.
+	int limit0 = limits_global[block];
+	int limit1 = limits_global[block + 1];
+
+	SegReduceRange range;
+	SegReduceTerms terms;
+	int rows[VT + 1], rowStarts[VT];
+  int indices[VT];
+	T   data[VT];
+
+	if(Indirect) {
+		// Transform the row limits into ranges.
+		range = DeviceShiftRange(limit0, limit1);
+		int numRows = range.end - range.begin;
+
+		// Load the CSR interval.
+		DeviceGlobalToSharedLoop<NT, VT>(numRows, csr_global + range.begin, tid, 
+			shared.csr);
+
+		// Flatten CSR->COO and return the segmented scan terms.
+		terms = DeviceSegReducePrepare<NT, VT>(shared.csr, numRows, tid, gid, 
+			range.flushLast, rows, rowStarts);
+
+		// Load tile of data in thread order from row IDs.
+		SpmspvLoad::LoadIndirect(count2, tid, gid, numRows, range.begin, rows, 
+			rowStarts, sources_indices, sources_global, matrix_global, cols_global, 
+      dest_indices, dest_global, identity, mulOp, shared.spmspvLoadStorage,
+      shared2.spmspvLoadStorage );
+
+	}
+}
+
+
 ////////////////////////////////////////////////////////////////////////////////
 // SpmvCsrHost
 
@@ -348,12 +524,11 @@ MGPU_HOST void SpmspvCsrInner(MatrixIt matrix_global, ColsIt cols_global,
 		sources_nvals, numRows2_global, numBlocks + 1, context);
   std::cout << "Before Spmspv kernel execution\n";		
 	// Evaluate the Spmv product.
-	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
-	/*KernelSpmspvCsr<Tuning, Indirect, LoadLeft>
-		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global,
-		cols_global, nz, csr_global, sources_indices, sources_global, 
-		limitsDevice->get(), dest_indices, dest_global, carryOutDevice->get(), 
-    identity, mulOp);*/
+	//MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
+	KernelSpmspvCsr<Tuning, Indirect, LoadLeft>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(matrix_global, cols_global, 
+    nz, csr_global, sources_indices, sources_global, limitsDevice->get(), 
+    dest_indices, dest_global, dest_nvals, identity, mulOp);
 	MGPU_SYNC_CHECK("KernelSpmspvCsr");
   cudaDeviceSynchronize();
   std::cout << "After Spmspv kernel execution\n";		
