@@ -87,6 +87,11 @@ struct not_equal_to : public std::binary_function<T, T, bool> {
 ////////////////////////////////////////////////////////////////////////////////
 // Device-side arithmetic operators
 
+template <typename T>
+struct identity : public std::unary_function<T, T> {
+  MGPU_HOST_DEVICE T operator()(T a) { return a; }
+};
+
 template<typename T>
 struct plus : public std::binary_function<T, T, T> {
 	MGPU_HOST_DEVICE T operator()(T a, T b) { return a + b; }

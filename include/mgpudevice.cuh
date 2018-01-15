@@ -124,6 +124,10 @@ template<int NT, typename InputIt, typename OutputIt>
 MGPU_DEVICE void DeviceMemToMemLoop(int count, InputIt source, int tid, 
 	OutputIt dest, bool sync = true);
 
+template<int NT, typename InputIt, typename OutputIt, typename SourceIt>
+MGPU_DEVICE void DeviceMemToMemLoopIndirect(int count, InputIt source,
+  SourceIt load, int tid, OutputIt dest, bool sync = true);
+
 // For 0 <= index < count:
 //		dest[index] = source[index];
 // Synchronize after store.

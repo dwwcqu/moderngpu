@@ -182,15 +182,16 @@ struct CTASpmvLoad {
 		// Gather data into stridedData.
 		T matrixData[VT];
 		if(LoadLeft)
-			DeviceGatherDefault<NT, VT>(count2, matrix_global, indices, 
+    	DeviceGatherDefault<NT, VT>(count2, matrix_global, indices, 
 				tid, matrixData, identity);						
-		
+
 		// Use ldg to load vector data in strided order.
 		T vecData[VT];
 		#pragma unroll
 		for(int i = 0; i < VT; ++i)
-			vecData[i] = ldg(vec_global + columns[i]);
-
+		{	vecData[i] = ldg(vec_global + columns[i]);
+      if( tid<16 ) printf("%d + %d: %d columns\n", tid, i, columns[i]);
+    }
 		// Multiply matrix and vector values together.
 		T stridedData[VT];
 		#pragma unroll
@@ -257,15 +258,12 @@ struct CTASpmspvLoad {
 		#pragma unroll
 		for(int i = 0; i < VT; ++i) {
 			int index = VT * tid + i;
-      //if( index<numRows )
-      //{
-			  int rowOffset = gid + index - rowStarts[i];
-			  int source = storage.sources[rows[i]];
-        T   value  = storage2.values[rows[i]];
-        if( tid<16 ) printf("%d %d: %d %f\n", tid, i, source, value);
-			  indices[i] = source + rowOffset;
-        values [i] = value;
-      //}
+      int rowOffset = gid + index - rowStarts[i];
+      int source = storage.sources[rows[i]];
+      T   value  = storage2.values[rows[i]];
+      indices[i] = source + rowOffset;
+      values [i] = value;
+      if( tid<16 ) printf("%d %d: %d %f %d %d %d %d\n", tid, index, source, value, indices[i], rowStarts[i], gid, rowOffset);
 		}
 		__syncthreads();
 
@@ -277,11 +275,8 @@ struct CTASpmspvLoad {
     DeviceThreadToShared<VT>(values, tid, storage2.values);
     DeviceSharedToReg<NT, VT>(storage2.values, tid, values);
 
-    //for(int i = 0; i < VT; ++i)
-    //{
-      if( tid<16 ) printf("%d: %d indices\n", tid, indices[0]);
-      if( tid<16 ) printf("%d: %f values\n",  tid, values [0]);
-    //}
+    if( tid<16 ) printf("%d: %d indices\n", tid, indices[0]);
+    if( tid<16 ) printf("%d: %f values\n",  tid, values [0]);
 
 		// Gather columns from cols_global.
 		int columns[VT];
@@ -448,7 +443,7 @@ MGPU_LAUNCH_BOUNDS void KernelSpmspvCsr(MatrixIt matrix_global,
 	int block = blockIdx.x;
 	int gid = NV * block;
 	int count2 = min(NV, nz - gid);
-  if( tid==0 && block==0 ) printf("count2: %d\n", count2);
+  //if( tid==0 && block==0 ) printf("count2: %d\n", count2);
 
 	// Retrieve the left and right row limits.
 	int limit0 = limits_global[block];
