@@ -259,10 +259,10 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMoveIndirect(int moveCount,
 	int gather[VT], scatter[VT];
 	if(Gather) {
 		// Load the gather pointers into intervals_shared.
-		DeviceMemToMemLoop<NT>(intervalCount, scatter_global + range.z, tid, 
-        intervals_shared);
-		//DeviceMemToMemLoopIndirect<NT>(intervalCount, gather_global, 
-    //  sources_global + range.z, tid, intervals_shared);
+		//DeviceMemToMemLoop<NT>(intervalCount, scatter_global + range.z, tid, 
+    //    intervals_shared);
+		DeviceMemToMemLoopIndirect<NT>(intervalCount, gather_global, 
+      sources_global + range.z, tid, intervals_shared);
 
 		// Make a second pass through shared memory. Grab the start indices of
 		// the interval for each item and add the scan into it for the gather
@@ -272,7 +272,7 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMoveIndirect(int moveCount,
 		{
     	gather[i] = intervals_shared2[interval[i]] + rank[i];
     	//gather[i] = gather_global[intervals_shared2[interval[i]]] + rank[i];
-      printf( "%d %d: %d %d %d %d\n", tid, i, gather[i], intervals_shared2[interval[i]], interval[i], rank[i] );
+      //printf( "%d %d: %d %d %d %d\n", tid, i, gather[i], intervals_shared2[interval[i]], interval[i], rank[i] );
     }
 		__syncthreads();
 	} 
@@ -293,14 +293,14 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMoveIndirect(int moveCount,
 	// Gather the data into register.
 	typedef typename std::iterator_traits<InputIt>::value_type T;
 	T data[VT];
-	/*if(Gather)
+	if(Gather)
 		DeviceGather<NT, VT>(moveCount, input_global, gather, tid, data, false);
 	else
 		DeviceGlobalToReg<NT, VT>(moveCount, input_global + range.x, tid, data);
 
   for( int i=0; i<VT; i++ )
   {
-    printf("%d %d: %d %d\n", tid, i, data[i], gather[i]);
+    //printf("%d %d: %d %d\n", tid, i, data[i], gather[i]);
   }
 
 	// Scatter the data into global.
@@ -309,7 +309,7 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMoveIndirect(int moveCount,
 			false);
 	else
 		DeviceRegToGlobal<NT, VT>(moveCount, data, tid, 
-			output_global + range.x);*/	
+			output_global + range.x);	
 }
 
 ////////////////////////////////////////////////////////////////////////////////
