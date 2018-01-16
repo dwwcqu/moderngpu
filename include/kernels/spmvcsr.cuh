@@ -34,6 +34,8 @@
 
 #pragma once
 
+#include <iostream>
+
 #include "../mgpuhost.cuh"
 #include "../kernels/segreduce.cuh"
 #include "../kernels/bulkinsert.cuh"
