@@ -216,6 +216,67 @@ MGPU_HOST void Scan(DataIt data_global, int count, T identity, Op op,
 		copyDtoH(reduce_host, reduce_global, 1);
 }
 
+template<MgpuScanType Type, typename DataIt, typename T, typename Op,
+	typename DestIt>
+MGPU_HOST void ScanPrealloc(DataIt data_global, int count, T identity, Op op,
+	T* reduce_global, T* reduce_host, DestIt dest_global, T* reduce_device,
+	CudaContext& context) {
+		
+	MGPU_MEM(T) totalDevice;
+	if(reduce_host && !reduce_global) {
+		totalDevice = context.Malloc<T>(1);
+		reduce_global = totalDevice->get();
+	}
+
+	if(count <= 256) {
+		typedef LaunchBoxVT<256, 1> Tuning;
+		KernelScanParallel<Tuning, Type><<<1, 256, 0, context.Stream()>>>(
+			data_global, count, identity, op, reduce_global, dest_global);
+		MGPU_SYNC_CHECK("KernelScanParallel");
+
+	} else if(count <= 768) {
+		typedef LaunchBoxVT<256, 3> Tuning;
+		KernelScanParallel<Tuning, Type><<<1, 256, 0, context.Stream()>>>(
+			data_global, count, identity, op, reduce_global, dest_global);
+		MGPU_SYNC_CHECK("KernelScanParallel");
+
+	} else if (count <= 512 * 5) {
+		typedef LaunchBoxVT<512, 5> Tuning;
+		KernelScanParallel<Tuning, Type><<<1, 512, 0, context.Stream()>>>(
+			data_global, count, identity, op, reduce_global, dest_global);
+		MGPU_SYNC_CHECK("KernelScanParallel");
+
+	} else {
+		typedef LaunchBoxVT<
+			128, (sizeof(T) > 4) ? 7 : 15, 0,
+			128, 7, 0,
+			128, 7, 0
+		> Tuning;
+		int2 launch = Tuning::GetLaunchParams(context);
+		int NV = launch.x * launch.y;
+		int numBlocks = MGPU_DIV_UP(count, NV);
+		//MGPU_MEM(T) reduceDevice = context.Malloc<T>(numBlocks + 1);
+    std::cout << "Scan: " << numBlocks << std::endl;
+
+		// Reduce tiles into reduceDevice.
+		KernelReduce<Tuning><<<numBlocks, launch.x, 0, context.Stream()>>>(
+			data_global, count, identity, op, reduce_device);
+		MGPU_SYNC_CHECK("KernelReduce");
+
+		// Recurse to scan the reductions.
+		Scan<MgpuScanTypeExc>(reduce_device, numBlocks, identity, op,
+			 reduce_global, (T*)0, reduce_device, context);
+
+		// Add scanned reductions back into output and scan.
+		KernelScanDownsweep<Tuning, Type>
+			<<<numBlocks, launch.x, 0, context.Stream()>>>(data_global, count,
+			reduce_device, identity, op, dest_global);
+		MGPU_SYNC_CHECK("KernelScanDownsweep");
+	}
+	if(reduce_host)
+		copyDtoH(reduce_host, reduce_global, 1);
+}
+
 template<typename InputIt, typename T>
 MGPU_HOST void ScanExc(InputIt data_global, int count, T* total,
 	CudaContext& context) {

@@ -499,7 +499,7 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 	// Use upper-bound binary search to partition the CSR structure into tiles.
 	MGPU_MEM(int) limitsDevice = PartitionCsrSegReduce(nz, NV, csr_global,
 		numRows, numRows2_global, numBlocks + 1, context);
-  std::cout << "Before Spmv kernel execution\n";		
+  //std::cout << "Before Spmv kernel execution\n";		
 	// Evaluate the Spmv product.
 	MGPU_MEM(T) carryOutDevice = context.Malloc<T>(numBlocks);
 	KernelSpmvCsr<Tuning, Indirect, LoadLeft>
@@ -509,7 +509,7 @@ MGPU_HOST void SpmvCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 		mulOp, addOp);
 	MGPU_SYNC_CHECK("KernelSpmvCsr");
   cudaDeviceSynchronize();
-  std::cout << "After Spmv kernel execution\n";		
+  //std::cout << "After Spmv kernel execution\n";		
 
 	// Add the carry-in values.
 	SegReduceSpine(limitsDevice->get(), numBlocks, dest_global,

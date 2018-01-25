@@ -341,6 +341,31 @@ MGPU_HOST void IntervalGather(int moveCount, GatherIt gather_global,
 }
 
 template<typename GatherIt, typename IndicesIt, typename InputIt,
+	typename OutputIt>
+MGPU_HOST void IntervalGatherPrealloc(int moveCount, GatherIt gather_global, 
+	IndicesIt indices_global, int intervalCount, InputIt input_global,
+	OutputIt output_global, int* partitions_device, CudaContext& context) {
+
+	const int NT = 128;
+	const int VT = 7;
+	typedef LaunchBoxVT<NT, VT> Tuning;
+	int2 launch = Tuning::GetLaunchParams(context);
+
+	int NV = launch.x * launch.y;
+	int numBlocks = MGPU_DIV_UP(moveCount + intervalCount, NV);
+	
+	MergePathPartitions<MgpuBoundsUpper>(
+		mgpu::counting_iterator<int>(0), moveCount, indices_global,
+		intervalCount, NV, 0, mgpu::less<int>(), partitions_device, context);
+
+	KernelIntervalMove<Tuning, true, false>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(moveCount, gather_global,
+		(const int*)0, indices_global, intervalCount, input_global,
+		partitions_device, output_global);
+	MGPU_SYNC_CHECK("KernelIntervalMove");
+}
+
+template<typename GatherIt, typename IndicesIt, typename InputIt,
 	typename OutputIt, typename SourceIt>
 MGPU_HOST void IntervalGatherIndirect(int moveCount, GatherIt gather_global, 
 	IndicesIt indices_global, int intervalCount, InputIt input_global,
@@ -365,6 +390,32 @@ MGPU_HOST void IntervalGatherIndirect(int moveCount, GatherIt gather_global,
 	MGPU_SYNC_CHECK("KernelIntervalMove");
 }
 
+template<typename GatherIt, typename IndicesIt, typename InputIt,
+	typename OutputIt, typename SourceIt>
+MGPU_HOST void IntervalGatherIndirectPrealloc(int moveCount, 
+  GatherIt gather_global, 
+	IndicesIt indices_global, int intervalCount, InputIt input_global,
+	SourceIt sources_global, OutputIt output_global, int* partitions_device,
+  CudaContext& context) {
+
+	const int NT = 128;
+	const int VT = 7;
+	typedef LaunchBoxVT<NT, VT> Tuning;
+	int2 launch = Tuning::GetLaunchParams(context);
+
+	int NV = launch.x * launch.y;
+	int numBlocks = MGPU_DIV_UP(moveCount + intervalCount, NV);
+	
+  MergePathPartitionsPrealloc<MgpuBoundsUpper>(
+		mgpu::counting_iterator<int>(0), moveCount, indices_global,
+		intervalCount, NV, 0, mgpu::less<int>(), partitions_device, context);
+
+	KernelIntervalMoveIndirect<Tuning, true, false>
+		<<<numBlocks, launch.x, 0, context.Stream()>>>(moveCount, gather_global,
+		(const int*)0, indices_global, intervalCount, input_global, sources_global,
+		partitions_device, output_global);
+	MGPU_SYNC_CHECK("KernelIntervalMove");
+}
 ////////////////////////////////////////////////////////////////////////////////
 // IntervalScatter
 

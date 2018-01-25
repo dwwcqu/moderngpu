@@ -117,6 +117,24 @@ MGPU_MEM(int) MergePathPartitions(It1 a_global, int aCount, It2 b_global,
 	return partitionsDevice;
 }
 
+template<MgpuBounds Bounds, typename It1, typename It2, typename Comp>
+void MergePathPartitionsPrealloc(It1 a_global, int aCount, 
+  It2 b_global, int bCount, int nv, int coop, Comp comp, int* partitions_device,
+  CudaContext& context) {
+
+	const int NT = 64;
+	int numPartitions = MGPU_DIV_UP(aCount + bCount, nv);
+	int numPartitionBlocks = MGPU_DIV_UP(numPartitions + 1, NT);
+	//MGPU_MEM(int) partitionsDevice = context.Malloc<int>(numPartitions + 1);
+  std::cout << "Merge: " << numPartitionBlocks << std::endl;
+
+	KernelMergePartition<NT, Bounds>
+		<<<numPartitionBlocks, NT, 0, context.Stream()>>>(a_global, aCount,
+		b_global, bCount, nv, coop, partitions_device, numPartitions + 1, 
+		comp);
+	MGPU_SYNC_CHECK("KernelMergePartition");
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // FindSetPartitions
 
