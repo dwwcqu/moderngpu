@@ -509,4 +509,46 @@ MGPU_HOST void SegReduceApply(const SegReducePreprocessData& preprocess,
 	}
 }
 
+template<typename InputIt, typename DestIt, typename T, typename Op>
+MGPU_HOST void SegReduceApplyPrealloc(const SegReducePreprocessData& preprocess,
+	int* limits_device, int* thread_device, InputIt data_global, T identity, 
+  Op op, DestIt dest_global, CudaContext& context) {
+
+	typedef typename SegReducePreprocessTuning<sizeof(T)>::Tuning Tuning;
+	int2 launch = Tuning::GetLaunchParams(context);
+
+	if(preprocess.csr2Device.get()) {
+		// Support empties.
+		MGPU_MEM(T) tempOutDevice = context.Malloc<T>(preprocess.numSegments2);
+		MGPU_MEM(T) carryOutDevice = context.Malloc<T>(preprocess.numBlocks);
+		KernelSegReduceApply<Tuning>
+			<<<preprocess.numBlocks, launch.x, 0, context.Stream()>>>(
+			thread_device, preprocess.count, limits_device, data_global, identity, op,
+			tempOutDevice->get(), carryOutDevice->get());
+		MGPU_SYNC_CHECK("KernelSegReduceApply");
+
+		// Add the carry-in values.
+		SegReduceSpine(limits_device, preprocess.numBlocks, 
+			tempOutDevice->get(), carryOutDevice->get(), identity, op, context);
+
+		// Insert identity into the empty segments and stream into dest_global.
+		BulkInsert(mgpu::constant_iterator<T>(identity), 
+			preprocess.csr2Device->get() + preprocess.numSegments2,
+			preprocess.numSegments - preprocess.numSegments2, 
+			tempOutDevice->get(), preprocess.numSegments2, dest_global,
+			context);
+	} else {
+		// No empties.
+		MGPU_MEM(T) carryOutDevice = context.Malloc<T>(preprocess.numBlocks);
+		KernelSegReduceApply<Tuning>
+			<<<preprocess.numBlocks, launch.x, 0, context.Stream()>>>(
+			thread_device, preprocess.count, limits_device, data_global, identity, op,
+			dest_global, carryOutDevice->get());
+		MGPU_SYNC_CHECK("KernelSegReduceApply");
+
+		// Add the carry-in values.
+		SegReduceSpine(limits_device, preprocess.numBlocks, 
+			dest_global, carryOutDevice->get(), identity, op, context);
+	}
+}
 } // namespace mgpu

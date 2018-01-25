@@ -126,7 +126,6 @@ void MergePathPartitionsPrealloc(It1 a_global, int aCount,
 	int numPartitions = MGPU_DIV_UP(aCount + bCount, nv);
 	int numPartitionBlocks = MGPU_DIV_UP(numPartitions + 1, NT);
 	//MGPU_MEM(int) partitionsDevice = context.Malloc<int>(numPartitions + 1);
-  std::cout << "Merge: " << numPartitionBlocks << std::endl;
   cudaMemset(partitions_device, 0, numPartitionBlocks*sizeof(int));
 
 	KernelMergePartition<NT, Bounds>

@@ -256,7 +256,6 @@ MGPU_HOST void ScanPrealloc(DataIt data_global, int count, T identity, Op op,
 		int NV = launch.x * launch.y;
 		int numBlocks = MGPU_DIV_UP(count, NV);
 		//MGPU_MEM(T) reduceDevice = context.Malloc<T>(numBlocks + 1);
-    std::cout << "Scan: " << numBlocks << std::endl;
 
 		// Reduce tiles into reduceDevice.
 		KernelReduce<Tuning><<<numBlocks, launch.x, 0, context.Stream()>>>(
