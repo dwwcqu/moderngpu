@@ -236,6 +236,46 @@ MGPU_DEVICE void DeviceMemToMemLoop(int count, InputIt source, int tid,
 	if(sync) __syncthreads();
 }
 
+template<int NT, int VT, typename InputIt, typename OutputIt, typename SourceIt>
+MGPU_DEVICE void DeviceMemToMem4Indirect(int count, InputIt source, 
+  SourceIt load, int tid, OutputIt dest, bool sync) {
+
+	typedef typename std::iterator_traits<InputIt>::value_type T;
+
+	T x[VT];
+	const int Count = (VT < 4) ? VT : 4;
+	if(count >= NT * VT) {
+		#pragma unroll
+		for(int i = 0; i < Count; ++i)
+			x[i] = source[load[NT * i + tid]];
+		#pragma unroll
+		for(int i = 0; i < Count; ++i)
+			dest[NT * i + tid] = x[i];
+	} else {
+		#pragma unroll
+		for(int i = 0; i < Count; ++i) {
+			int index = NT * i + tid;
+			if(index < count)
+				x[i] = source[load[NT * i + tid]];
+		}
+		#pragma unroll
+		for(int i = 0; i < Count; ++i) {
+			int index = NT * i + tid;
+			if(index < count)
+				dest[index] = x[i];
+		}
+	}
+	if(sync) __syncthreads();
+}
+template<int NT, typename InputIt, typename OutputIt, typename SourceIt>
+MGPU_DEVICE void DeviceMemToMemLoopIndirect(int count, InputIt source, 
+  SourceIt load, int tid, OutputIt dest, bool sync) {
+
+	for(int i = 0; i < count; i += 4 * NT)
+		DeviceMemToMem4Indirect<NT, 4>(count - i, source, load + i, tid, dest + i,
+			false);
+	if(sync) __syncthreads();
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Functions to copy between shared and global memory where the average case is
