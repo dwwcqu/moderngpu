@@ -707,7 +707,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   CUDA( cudaDeviceSynchronize() );	
   printf("In SpmmCsrInner: SegReduceSpine\n");
 }
-=======
+
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt, 
 	typename ColsIt, typename CsrIt, typename SourcesIt, typename SourcesValIt,
 	typename DestIt, typename DestValIt, typename T, typename MulOp>
