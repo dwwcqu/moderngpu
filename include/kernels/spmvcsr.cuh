@@ -513,8 +513,109 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   printDense(B_ncols, mgpu_nb.x, carryin_global);
 
 	// Add the carry-in values.
-	SegReduceSpinePrealloc(limits_global, numBlocks, dest_global,
-		carryin_global, carryout_global, identity, addOp, context);
+  switch( tb )
+	{
+    case 4:
+      switch( nt )
+      {
+        case 32:	
+          SegReduceSpinePrealloc<4,  32>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 64:
+          SegReduceSpinePrealloc<4,  64>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 128:
+          SegReduceSpinePrealloc<4, 128>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 256:
+          SegReduceSpinePrealloc<4, 256>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 512:
+          SegReduceSpinePrealloc<4, 512>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+      }
+      break;
+    case 8:
+      switch( nt )
+      {
+        case 32:	
+          SegReduceSpinePrealloc<8,  32>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 64:
+          SegReduceSpinePrealloc<8,  64>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 128:
+          SegReduceSpinePrealloc<8, 128>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 256:
+          SegReduceSpinePrealloc<8, 256>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 512:
+          SegReduceSpinePrealloc<8, 512>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+      }
+      break;
+    case 16:
+      switch( nt )
+      {
+        case 32:	
+          SegReduceSpinePrealloc<16,  32>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 64:
+          SegReduceSpinePrealloc<16,  64>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 128:
+          SegReduceSpinePrealloc<16, 128>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 256:
+          SegReduceSpinePrealloc<16, 256>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 512:
+          SegReduceSpinePrealloc<16, 512>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+      }
+      break;
+    case 32:
+      switch( nt )
+      {
+        case 32:	
+          SegReduceSpinePrealloc<32,  32>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 64:
+          SegReduceSpinePrealloc<32,  64>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 128:
+          SegReduceSpinePrealloc<32, 128>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 256:
+          SegReduceSpinePrealloc<32, 256>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+        case 512:
+          SegReduceSpinePrealloc<32, 512>(limits_global, mgpu_nb.x, dest_global,
+              carryin_global, carryout_global, identity, addOp, context);
+          break;
+      }
+      break;
+  }
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
