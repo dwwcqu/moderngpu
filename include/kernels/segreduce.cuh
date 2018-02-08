@@ -267,6 +267,7 @@ MGPU_HOST void SegReduceSpine(const int* limits_global, int count,
 	}
 }
 
+// For SpMM
 template<typename T, typename Op, typename DestIt>
 MGPU_HOST void SegReduceSpinePrealloc(const int* limits_global, int count, 
 	DestIt dest_global, const T* carryIn_global, T* carryOut_global, T identity, 

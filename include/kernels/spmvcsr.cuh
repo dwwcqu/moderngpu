@@ -241,8 +241,8 @@ void printDense(const int nrows, const int ncols, DestIt array)
   // Allocate array on host
   int nvals=nrows*ncols;
   float* temp = (float*) malloc(nvals*sizeof(float));
-  CUDA( cudaMemcpy( temp, array, nvals*sizeof(float), 
-      cudaMemcpyDeviceToHost ));
+  cudaMemcpy( temp, array, nvals*sizeof(float), 
+      cudaMemcpyDeviceToHost );
 
   // Print out all dense values
   std::cout << "dest_global:\n";
@@ -259,6 +259,30 @@ void printDense(const int nrows, const int ncols, DestIt array)
     }
     std::cout << std::endl;
   }
+
+  // Cleanup
+  if( temp ) free( temp );
+}
+
+template<typename T>
+void printArray( const char* str, const T *array, int length=40 )
+{
+  if( length>40 ) length=40;
+  std::cout << str << ":\n";
+  for( int i=0;i<length;i++ )
+    std::cout << "[" << i << "]:" << array[i] << " ";
+  std::cout << "\n";
+}
+
+template <typename T>
+void printDevice( const char* str, const T* array, int length=40 )
+{
+  if( length>40 ) length=40;
+
+  // Allocate array on host
+  T *temp = (T*) malloc(length*sizeof(T));
+  cudaMemcpy( temp, array, length*sizeof(T), cudaMemcpyDeviceToHost );
+  printArray( str, temp, length );
 
   // Cleanup
   if( temp ) free( temp );
@@ -484,13 +508,13 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   }
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
-  //PrintArray(*limitsDevice, "%4d", 10);
-  //printDense(numRows, B_ncols, dest_global);
-  //printDense(B_ncols, numBlocks, carryOutDevice->get());
+  printDevice("limits", limits_global, mgpu_nb.x+1);
+  printDense(numRows, B_ncols, dest_global);
+  printDense(B_ncols, mgpu_nb.x, carryin_global);
 
 	// Add the carry-in values.
-	//SegReduceSpinePrealloc(limits_global, numBlocks, dest_global,
-	//	carryin_global, carryout_global, identity, addOp, context);
+	SegReduceSpinePrealloc(limits_global, numBlocks, dest_global,
+		carryin_global, carryout_global, identity, addOp, context);
 }
 
 template<typename Tuning, bool Indirect, bool LoadLeft, typename MatrixIt,
