@@ -222,7 +222,7 @@ __global__ void KernelSpmmCsr(MatrixIt matrix_global,
     // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.
     carryOut = SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
-        range.begin, block, tid, lane_id, data, 
+        range.begin, block, tid, lane_id, data, B_ncols, 
         dest_global+(blockIdx.z<<5), carryOut_global+(blockIdx.z<<5), 
         carryIn, slab, identity, addOp, shared_storage);
     carryIn  = carryOut;

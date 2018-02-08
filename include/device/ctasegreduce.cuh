@@ -180,7 +180,7 @@ MGPU_DEVICE SegReduceTerms DeviceSegReducePrepareSpmm(const int* csr_shared,
 // Core segmented reduction code. Supports fast-path and slow-path for intra-CTA
 // segmented reduction. Stores partials to global memory.
 // Callers feed CTASegReduce::ReduceToGlobal values in thread order.
-template<int NT, int MGPU_TB, bool HalfCapacity, typename T, typename Op>
+template<int NT, int TB, bool HalfCapacity, typename T, typename Op>
 struct CTASegReduce {
 	typedef CTASegScan<NT, Op> SegScan;
 
@@ -192,20 +192,19 @@ struct CTASegReduce {
 	union Storage {
 		typename SegScan::Storage segScanStorage;
 		T values[Capacity];
-		//T values[Capacity*MGPU_TB];
+		//T values[Capacity*TB];
 	};
 	
 	template<typename DestIt>
 	MGPU_DEVICE static T ReduceToGlobalSpmm(
-    const int rows[MGPU_TB + 1], int total, int tidDelta, int startRow, 
-    int block, int tid, int lane_id, T data[MGPU_TB], DestIt dest_global, 
-    T* carryOut_global, T carryInPrev, int slab, T identity, Op op, 
-    T* storage) {
+    const int rows[TB + 1], int total, int tidDelta, int startRow, int block, 
+    int tid, int lane_id, T data[TB], int B_ncols, DestIt dest_global, 
+    T* carryOut_global, T carryInPrev, int slab, T identity, Op op, T* storage)   {
 
 		// Run a segmented scan within the thread.
-		T x, localScan[MGPU_TB];
+		T x, localScan[TB];
     #pragma unroll
-    for(int i = 0; i < MGPU_TB; ++i)
+    for(int i = 0; i < TB; ++i)
     {
       x = i ? op(x, data[i]) : op(carryInPrev, data[i]);
       localScan[i] = x;
@@ -223,7 +222,7 @@ struct CTASegReduce {
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
-		dest_global += startRow<<6;
+		dest_global += startRow*B_ncols;
 
     // TODO: Implement shared memory write out to global
     //      -else() part of this statement
@@ -232,7 +231,7 @@ struct CTASegReduce {
 			// to global.
       float x2;
 			#pragma unroll
-			for(int i = 0; i < MGPU_TB; ++i)
+			for(int i = 0; i < TB; ++i)
       {
 				// Add the carry-in to the local scan.
         x2 = localScan[i];//op(carryInPrev, localScan[i]);
@@ -242,22 +241,23 @@ struct CTASegReduce {
 				if(rows[i] != rows[i + 1])
         {
 					//carryInPrev = identity;
-					dest_global[(rows[i]<<6)+lane_id] = x2;
+					dest_global[(rows[i]*B_ncols)+lane_id] = x2;
           //  if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
           //    printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
 				}
       }
-		T carryOut = rows[MGPU_TB-1]!=rows[MGPU_TB] ? 0 : localScan[MGPU_TB-1];
+		T carryOut = rows[TB-1]!=rows[TB] ? 0 : localScan[TB-1];
     //if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
 
 		// Store the carry-out for the entire CTA to global memory.
-		if(slab==32-MGPU_TB)
+    // TODO: This is the source of the bug! Must fix.
+		if(slab==32-TB)
     {
       __syncthreads();
-      if( tid<NT-32 && rows[MGPU_TB-1]==rows[MGPU_TB] )
-        dest_global[(rows[MGPU_TB]<<6)+lane_id] += carryOut;
+      if( tid<NT-32 && rows[TB-1]==rows[TB] )
+        dest_global[(rows[TB]*B_ncols)+lane_id] += carryOut;
       if(tid>=NT-32)
-        carryOut_global[(block<<6)+(tid%32)] = carryOut;
+        carryOut_global[(block*B_ncols)+(tid%32)] = carryOut;
         //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
       
 		}
@@ -265,22 +265,22 @@ struct CTASegReduce {
 		/*} else {
 			// All partials fit in shared memory. Add carry-in to each thread-
 			// local scan value.
-      T x2[MGPU_TB];
+      T x2[TB];
 			#pragma unroll
 			for(int i = 0; i < VT; ++i) {
 				// Add the carry-in to the local scan.
         #pragma unroll
-        for( int j=0; j<MGPU_TB; j++ )
-				  x2[j] = op(carryIn[j], localScan[i*MGPU_TB+j]);
+        for( int j=0; j<TB; j++ )
+				  x2[j] = op(carryIn[j], localScan[i*TB+j]);
 
 				// Store reduction when the segment changes and clear the 
 				// carry-in.
 				if(rows[i] != rows[i + 1]) {
 
           #pragma unroll
-          for( int j=0; j<MGPU_TB; j++ )
+          for( int j=0; j<TB; j++ )
           {
-					  storage.values[rows[i]*MGPU_TB+j] = x2[j];
+					  storage.values[rows[i]*TB+j] = x2[j];
 					  carryIn[j] = identity;
           }
 				}
