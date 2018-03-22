@@ -508,9 +508,9 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
   }
 	MGPU_SYNC_CHECK("KernelSpmmCsr");
 
-  printDevice("limits", limits_global, mgpu_nb.x+1);
-  printDense(numRows, B_ncols, dest_global);
-  printDense(B_ncols, mgpu_nb.x, carryin_global);
+  //printDevice("limits", limits_global, mgpu_nb.x+1);
+  //printDense(numRows, B_ncols, dest_global);
+  //printDense(B_ncols, mgpu_nb.x, carryin_global);
 
 	// Add the carry-in values.
   switch( tb )
