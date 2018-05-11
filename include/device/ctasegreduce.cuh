@@ -196,102 +196,94 @@ struct CTASegReduce {
 	};
 	
 	template<typename DestIt>
-	MGPU_DEVICE static T ReduceToGlobalSpmm(
+	MGPU_DEVICE static void ReduceToGlobalSpmm(
     const int rows[TB + 1], int total, int tidDelta, int startRow, int block, 
     int tid, int lane_id, T data[TB], int B_ncols, DestIt dest_global, 
-    T* carryOut_global, T carryInPrev, int slab, T identity, Op op, T* storage)   {
+    T* carryOut_global, int slab, T identity, Op op, T* storage)   {
 
 		// Run a segmented scan within the thread.
 		T x, localScan[TB];
-    #pragma unroll
+    //#pragma unroll
     for(int i = 0; i < TB; ++i)
     {
-      x = i ? op(x, data[i]) : op(carryInPrev, data[i]);
+      x = i ? op(x, data[i]) : data[i];
       localScan[i] = x;
+      //if( tid+blockIdx.x*blockDim.x==7 ) printf("%d: %d %d %d %f\n", blockIdx.z, i, rows[i], rows[i+1], x);
       if(rows[i] != rows[i + 1]) 
         x = identity;
     }
-    /*if( blockIdx.z==0 )
-    {
-      if( tid==0 || tid==32 )
-        printf("tid %d: %d,%d,%d,%d\n", tid, rows[0], rows[1], rows[2], rows[3]);
-      if( (tid%32) < 16 && tid<48 )
-        printf("tid %d: %f,%f,%f,%f %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3], localScan[0], localScan[1], localScan[2], localScan[3]);
-    }
-    __syncthreads();*/
+
+    T carryIn, carryOut;
+    //if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
+    storage[tid] = carryOut;
+    __syncthreads();
+
+    //if( x!=0.f )
+    //  printf("block:%d, tid:%d, tidDelta:%d, x:%f\n", blockIdx.z, tid, tidDelta, x);
+
+		// Run an inclusive scan 
+		int first = 0;
+		storage[first + tid] = x;
+		__syncthreads();
+
+		#pragma unroll
+		for(int offset = 32; offset < NT; offset += offset) {
+			if(tidDelta >= offset) 
+				x = op(storage[first + tid - offset], x);
+			first = NT - first;
+			storage[first + tid] = x;
+			__syncthreads();
+		}
+
+		// Get the exclusive scan.
+		x = (tid>=32) ? storage[first + tid - 32] : identity;
+		carryOut = storage[first + NT - 32 + lane_id];
+
+		__syncthreads();
+    carryIn = x;
+    //if( blockIdx.x==0 )
+    //  printf("block.z:%d, tid:%d, x:%d\n", blockIdx.z, tid, x);
+
+    // Store carryOut to global memory
+    if(tid<32) carryOut_global[block*B_ncols+tid] = carryOut;
 
 		// Run a parallel segmented scan over the carry-out values to compute
 		// carry-in.
 		dest_global += startRow*B_ncols;
 
-    // TODO: Implement shared memory write out to global
-    //      -else() part of this statement
-		//if(HalfCapacity && total > Capacity) {
-			// Add carry-in to each thread-local scan value. Store directly
-			// to global.
-      float x2;
-			#pragma unroll
-			for(int i = 0; i < TB; ++i)
-      {
-				// Add the carry-in to the local scan.
-        x2 = localScan[i];//op(carryInPrev, localScan[i]);
+		// Add carry-in to each thread-local scan value. Store directly
+		// to global.
+		#pragma unroll
+		for(int i = 0; i < TB; ++i) {
+			// Add the carry-in to the local scan.
+			T x2 = op(carryIn, localScan[i]);
 
-				// Store on the end flag and clear the carry-in.
-        //if( tid==1 ) printf("%d = %d\n", rows[i], rows[i+1]);
-				if(rows[i] != rows[i + 1])
-        {
-					//carryInPrev = identity;
-					dest_global[(rows[i]*B_ncols)+lane_id] = x2;
-          //  if( (tid==1 || tid==0) && blockIdx.z==0 )//x2[j]>0.f )
-          //    printf("cta %d,%d,%d,%d:%f\n", tid, i, rows[i],rows[i+1],x2);
-				}
-      }
-		T carryOut = rows[TB-1]!=rows[TB] ? 0 : localScan[TB-1];
-    //if( tid<16 && blockIdx.z==0 ) printf("tid:%d: %f,%f\n", tid, carryOut, carryInPrev);
-
-		// Store the carry-out for the entire CTA to global memory.
-    // TODO: This is the source of the bug! Must fix.
-		if(slab==32-TB)
-    {
-      __syncthreads();
-      if( tid<NT-32 && rows[TB-1]==rows[TB] )
-        dest_global[(rows[TB]*B_ncols)+lane_id] += carryOut;
-      if(tid>=NT-32)
-        carryOut_global[(block*B_ncols)+(tid%32)] = carryOut;
-        //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);
-      
-		}
-    return carryOut;
-		/*} else {
-			// All partials fit in shared memory. Add carry-in to each thread-
-			// local scan value.
-      T x2[TB];
-			#pragma unroll
-			for(int i = 0; i < VT; ++i) {
-				// Add the carry-in to the local scan.
-        #pragma unroll
-        for( int j=0; j<TB; j++ )
-				  x2[j] = op(carryIn[j], localScan[i*TB+j]);
-
-				// Store reduction when the segment changes and clear the 
-				// carry-in.
-				if(rows[i] != rows[i + 1]) {
-
-          #pragma unroll
-          for( int j=0; j<TB; j++ )
-          {
-					  storage.values[rows[i]*TB+j] = x2[j];
-					  carryIn[j] = identity;
-          }
-				}
+			// Store on the end flag and clear the carry-in.
+			if(rows[i] != rows[i + 1]) {
+				carryIn = identity;
+				dest_global[(rows[i]*B_ncols)+lane_id] = x2;
 			}
-			__syncthreads();
+		}
+ 
+    // If not first warp, read from carryOut
+    //if( tid>=32 )
 
-			// Cooperatively store reductions to global memory.
-			for(int index = tid; index < total; index += NT)
-				dest_global[index] = storage.values[index];
-			__syncthreads();
-		}*/
+    // If not last warp, write to dest_global
+    /*if( tid<NT-32 && rows[TB-1]==rows[TB] )
+      dest_global[(rows[TB]*B_ncols)+lane_id] += carryOut;
+
+    // If last warp of last block
+    //if( blockIdx.x==blockDim.x-1 )
+    if( tid>=NT-32 )
+      carryOut_global[(block*B_ncols)+lane_id] = carryOut;
+      //if( carryOut[j]>0.f ) printf("%d:%f\n", tid, carryOut[j]);*/
+
+	  /*__syncthreads();
+
+  	// Cooperatively store reductions to global memory.
+		for(int index = tid; index < total; index += NT)
+			dest_global[index] = storage.values[index];
+		__syncthreads();*/
 	}
 };
 

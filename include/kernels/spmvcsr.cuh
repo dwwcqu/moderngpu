@@ -136,14 +136,15 @@ __global__ void KernelSpmmCsr(MatrixIt matrix_global,
 	};
 	__shared__ Shared shared;
   __shared__ int    shared_csr2[NT>>4]; // 2x number of warps
-  __shared__ float  shared_storage[NT];
+  __shared__ float  shared_storage[2*NT];
 
 	int tid = threadIdx.x;
 	int block = blockIdx.x;
 	int gid = NT * block;
-	int count2 = min(NT, nz - gid);
-  int lane_id = tid & (32 - 1);
-  int warp_id = tid>>5;
+	int count2    = min(NT, nz - gid);
+  int lane_id   = tid & (32 - 1);
+  int warp_id   = tid>>5;
+  int last_warp = nz>>5;
 
 	// Retrieve the left and right row limits.
 	int limit0 = __ldg(limits_global+block);
@@ -199,42 +200,49 @@ __global__ void KernelSpmmCsr(MatrixIt matrix_global,
     // Flatten CSR->COO and return the segmented scan terms.
     //terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr,
     //    numRows, tid, gid, range.flushLast, rows, rowStarts);
-    terms = DeviceSegReducePrepareSpmm<NT, MGPU_TB>(shared.csr, shared_csr2,
+    terms = DeviceSegReducePrepareSpmm<NT, 1>(shared.csr, shared_csr2,
         numRows, warp_id<<5, tid, gid, range.flushLast, rows, rowStarts);
-    /*if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 )
+    /*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 )
     {
-      printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
-      printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
+      printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
+      printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
     }*/
     #pragma unroll
-    for( int i=0; i<MGPU_TB+1; i++ )
-      rows[i] = __shfl(rows[i], slab/MGPU_TB);
+    rows[32] = __shfl(rows[1], 31);
+    for( int i=MGPU_TB-1; i>=0; i-- )
+      rows[i] = __shfl(rows[0], i);
+
     #pragma unroll
-    for( int i=0; i<MGPU_TB; i++ )
-      rowStarts[i] = __shfl(rowStarts[i], slab/MGPU_TB);
-    terms.tidDelta = __shfl(terms.tidDelta, slab/MGPU_TB);
-    /*if( (lane_id==0 || (lane_id<16 && threadIdx.x<64)) && blockIdx.z==0 && blockIdx.x==1 )
+    for( int i=MGPU_TB-1; i>=0; i-- )
+      rowStarts[i] = __shfl(rowStarts[0], i);
+
+    // If last warp is incomplete, cannot use 31 to shuffle
+    if( warp_id==last_warp )
+      terms.tidDelta = __shfl(terms.tidDelta, (nz & (32-1))-1);
+    else
+      terms.tidDelta = __shfl(terms.tidDelta, 31);
+    
+    /*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 || warp_id==last_warp )
     {
-      printf("tid:%d,row:%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[4],terms.tidDelta);
-      printf("tid:%d,rowStart:%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3]);
+      printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
+      printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
     }*/
 
     // Reduce tile data and store to dest_global. Write tile's carry-out
     // term to carryOut_global.
-    carryOut = SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
+    SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta, 
         range.begin, block, tid, lane_id, data, B_ncols, 
         dest_global+(blockIdx.z<<5), carryOut_global+(blockIdx.z<<5), 
-        carryIn, slab, identity, addOp, shared_storage);
-    carryIn  = carryOut;
+        slab, identity, addOp, shared_storage);
   }
 }
 
 template<typename DestIt>
 void printDense(const int nrows, const int ncols, DestIt array)
 {
-  int row_length=std::min(20,nrows);
+  int row_length=std::min(64,nrows);
   //int row_length=std::min(20,nrows);
-  int col_length=std::min(20,ncols);
+  int col_length=std::min(64,ncols);
 
   std::cout << row_length << " " << col_length << std::endl;
 
@@ -246,7 +254,7 @@ void printDense(const int nrows, const int ncols, DestIt array)
 
   // Print out all dense values
   std::cout << "dest_global:\n";
-  for( int i=0;i<min(40,nvals);i++ )
+  for( int i=0;i<min(2496,nvals);i++ )
     std::cout << "[" << i << "]:" << temp[i] << " ";
   std::cout << "\n";
 
@@ -267,7 +275,7 @@ void printDense(const int nrows, const int ncols, DestIt array)
 template<typename T>
 void printArray( const char* str, const T *array, int length=40 )
 {
-  if( length>40 ) length=40;
+  if( length>2496 ) length=2496;
   std::cout << str << ":\n";
   for( int i=0;i<length;i++ )
     std::cout << "[" << i << "]:" << array[i] << " ";
@@ -277,7 +285,7 @@ void printArray( const char* str, const T *array, int length=40 )
 template <typename T>
 void printDevice( const char* str, const T* array, int length=40 )
 {
-  if( length>40 ) length=40;
+  if( length>2496 ) length=2496;
 
   // Allocate array on host
   T *temp = (T*) malloc(length*sizeof(T));
@@ -510,7 +518,7 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
 
   //printDevice("limits", limits_global, mgpu_nb.x+1);
   //printDense(numRows, B_ncols, dest_global);
-  //printDense(B_ncols, mgpu_nb.x, carryin_global);
+  //printDense(mgpu_nb.x, B_ncols, carryin_global);
 
 	// Add the carry-in values.
   switch( tb )
@@ -520,23 +528,28 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
       {
         case 32:	
           SegReduceSpinePrealloc<4,  32>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 64:
           SegReduceSpinePrealloc<4,  64>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 128:
           SegReduceSpinePrealloc<4, 128>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 256:
           SegReduceSpinePrealloc<4, 256>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 512:
           SegReduceSpinePrealloc<4, 512>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
       }
       break;
@@ -545,23 +558,28 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
       {
         case 32:	
           SegReduceSpinePrealloc<8,  32>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 64:
           SegReduceSpinePrealloc<8,  64>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 128:
           SegReduceSpinePrealloc<8, 128>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 256:
           SegReduceSpinePrealloc<8, 256>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 512:
           SegReduceSpinePrealloc<8, 512>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
       }
       break;
@@ -570,23 +588,28 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
       {
         case 32:	
           SegReduceSpinePrealloc<16,  32>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 64:
           SegReduceSpinePrealloc<16,  64>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 128:
           SegReduceSpinePrealloc<16, 128>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 256:
           SegReduceSpinePrealloc<16, 256>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 512:
           SegReduceSpinePrealloc<16, 512>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
       }
       break;
@@ -595,23 +618,28 @@ MGPU_HOST void SpmmCsrInner(MatrixIt matrix_global, ColsIt cols_global, int nz,
       {
         case 32:	
           SegReduceSpinePrealloc<32,  32>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 64:
           SegReduceSpinePrealloc<32,  64>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 128:
           SegReduceSpinePrealloc<32, 128>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 256:
           SegReduceSpinePrealloc<32, 256>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
         case 512:
           SegReduceSpinePrealloc<32, 512>(limits_global, mgpu_nb.x, dest_global,
-              carryin_global, carryout_global, identity, addOp, context);
+              carryin_global, carryout_global, identity, addOp, B_ncols, 
+              context);
           break;
       }
       break;
