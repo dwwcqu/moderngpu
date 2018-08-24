@@ -37,25 +37,12 @@
 #include <cstdarg>
 #include <map>
 
-#if __cplusplus <= 199711L
-
 #define MGPU_RAND_NS std::tr1
 
-#if defined(_MSC_VER)
+#ifdef _MSC_VER
 #include <random>
 #else
 #include <tr1/random>
-#endif
-
-#else
-
-#include <random>
-
-#define MGPU_RAND_NS std
-
-#define uniform_int uniform_int_distribution
-#define uniform_real uniform_real_distribution
-
 #endif
 
 namespace mgpu {

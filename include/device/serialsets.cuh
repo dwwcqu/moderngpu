@@ -56,7 +56,6 @@ MGPU_DEVICE int SerialSetIntersection(const T* data, int aBegin, int aEnd,
 			(i < MinIterations || (aBegin + bBegin < end));
 
 		if(test) {
-			//if( threadIdx.x == 0 ) printf("i:%d, tid:%d, block:%d, abegin:%d, aend:%d, bbegin:%d, bend:%d\n", i, threadIdx.x, blockIdx.x, aBegin, aEnd, bBegin, bEnd );
 			T aKey = data[aBegin];
 			T bKey = data[bBegin];
 
@@ -64,18 +63,12 @@ MGPU_DEVICE int SerialSetIntersection(const T* data, int aBegin, int aEnd,
 			bool pB = comp(bKey, aKey);
 			
 			// The outputs must come from A by definition of set interection.
+			results[i] = aKey;
 			indices[i] = aBegin;
-			//results[i] = bKey;
-			//results[i] = bBegin;
-			//results[i] = bBegin-aEnd;
-			results[i] = bBegin-aEnd-1+RangeCheck;
 
 			if(!pB) ++aBegin;
 			if(!pA) ++bBegin;
-			if(pA == pB) {
-				commit |= 1<< i;
-				//if( threadIdx.x == 0 ) printf("%d, %d: %d, %d\n", blockIdx.x, threadIdx.x, indices[i], results[i]);
-			}
+			if(pA == pB) commit |= 1<< i;
 		}
 	}
 	return commit;

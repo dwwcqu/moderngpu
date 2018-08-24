@@ -11,10 +11,6 @@ ifdef NVCC_VERBOSE
 	NVCCFLAGS += -Xptxas="-v"
 endif
 
-ifdef NVCC_CPP11
-	NVCCFLAGS += -std=c++11
-endif
-
 INCLUDES := -I ../include
 
 GENCODE_SM20	:= -gencode arch=compute_20,code=sm_20
