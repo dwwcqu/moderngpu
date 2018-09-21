@@ -862,4 +862,3 @@ MGPU_HOST void SpmvBinaryApply(const SpmvPreprocessData& preprocess,
 }
 
 } // namespace mgpu
-
