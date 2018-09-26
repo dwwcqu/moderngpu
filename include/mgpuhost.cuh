@@ -612,7 +612,7 @@ struct SegReducePreprocessData;
 //							  launched on the associated stream.
 template<typename InputIt, typename CsrIt, typename OutputIt, typename T,
 	typename Op>
-MGPU_HOST void SegReduceCsr(InputIt data_global, int count, CsrIt csr_global, 
+MGPU_HOST void SegReduceCsr(InputIt data_global, CsrIt csr_global, int count,
 	int numSegments, bool supportEmpty, OutputIt dest_global, T identity, Op op, 
 	CudaContext& context);
 
