@@ -43,105 +43,6 @@
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
-// KernelIntervalExpand
-
-template<typename Tuning, typename IndicesIt, typename ValuesIt,
-	typename OutputIt>
-MGPU_LAUNCH_BOUNDS void KernelIntervalExpand(int destCount, 
-	IndicesIt indices_global, ValuesIt values_global, int sourceCount, 
-	const int* mp_global, OutputIt output_global) {
-
-	typedef MGPU_LAUNCH_PARAMS Params;
-	const int NT = Params::NT;
-	const int VT = Params::VT;
-	typedef typename std::iterator_traits<ValuesIt>::value_type T;
-
-	union Shared {
-		int indices[NT * (VT + 1)];
-		T values[NT * VT];
-	};
-	__shared__ Shared shared;
-	int tid = threadIdx.x;
-	int block = blockIdx.x;
-
-	// Compute the input and output intervals this CTA processes.
-	int4 range = CTALoadBalance<NT, VT>(destCount, indices_global, sourceCount,
-		block, tid, mp_global, shared.indices, true);
-	
-	// The interval indices are in the left part of shared memory (moveCount).
-	// The scan of interval counts are in the right part (intervalCount).
-	destCount = range.y - range.x;
-	sourceCount = range.w - range.z;
-
-	// Copy the source indices into register.
-	int sources[VT];
-	DeviceSharedToReg<NT, VT>(shared.indices, tid, sources);
-
-	// Load the source fill values into shared memory. Each value is fetched
-	// only once to reduce latency and L2 traffic.
-	DeviceMemToMemLoop<NT>(sourceCount, values_global + range.z, tid,
-		shared.values);
-	
-	// Gather the values from shared memory into register. This uses a shared
-	// memory broadcast - one instance of a value serves all the threads that
-	// comprise its fill operation.
-	T values[VT];
-	DeviceGather<NT, VT>(destCount, shared.values - range.z, sources, tid,
-		values, false);
-
-	// Store the values to global memory.
-	DeviceRegToGlobal<NT, VT>(destCount, values, tid, output_global + range.x);
-}
-
-template<typename Tuning, typename IndicesIt, typename GatherIt, 
-         typename ValuesIt, typename OutputIt>
-MGPU_LAUNCH_BOUNDS void KernelIntervalExpandIndirect(int destCount, 
-	IndicesIt indices_global, GatherIt gather_global, ValuesIt values_global, 
-  int sourceCount, const int* mp_global, OutputIt output_global) {
-
-	typedef MGPU_LAUNCH_PARAMS Params;
-	const int NT = Params::NT;
-	const int VT = Params::VT;
-	typedef typename std::iterator_traits<ValuesIt>::value_type T;
-
-	union Shared {
-		int indices[NT * (VT + 1)];
-		T values[NT * VT];
-	};
-	__shared__ Shared shared;
-	int tid = threadIdx.x;
-	int block = blockIdx.x;
-
-	// Compute the input and output intervals this CTA processes.
-	int4 range = CTALoadBalance<NT, VT>(destCount, indices_global, sourceCount,
-		block, tid, mp_global, shared.indices, true);
-	
-	// The interval indices are in the left part of shared memory (moveCount).
-	// The scan of interval counts are in the right part (intervalCount).
-	destCount = range.y - range.x;
-	sourceCount = range.w - range.z;
-
-	// Copy the source indices into register.
-	int sources[VT];
-	DeviceSharedToReg<NT, VT>(shared.indices, tid, sources);
-
-	// Load the source fill values into shared memory. Each value is fetched
-	// only once to reduce latency and L2 traffic.
-	DeviceMemToMemLoopIndirect<NT>(sourceCount, values_global, 
-    gather_global + range.z, tid, shared.values);
-
-	// Gather the values from shared memory into register. This uses a shared
-	// memory broadcast - one instance of a value serves all the threads that
-	// comprise its fill operation.
-	T values[VT];
-	DeviceGather<NT, VT>(destCount, shared.values - range.z, sources, tid,
-		values, false);
-
-	// Store the values to global memory.
-	DeviceRegToGlobal<NT, VT>(destCount, values, tid, output_global + range.x);
-}
-
-////////////////////////////////////////////////////////////////////////////////
 // IntervalExpand
 
 template<typename IndicesIt, typename ValuesIt, typename OutputIt>
@@ -287,6 +188,10 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMove(int moveCount,
 			output_global + range.x);	
 }
 
+  // indices_global: d_scan
+  // gather_global:  A_csrRowPtr
+  // sources_global: u_ind
+  // scatter_global: 
 template<typename Tuning, bool Gather, bool Scatter, typename GatherIt,
 	typename ScatterIt, typename IndicesIt, typename InputIt, typename OutputIt,
   typename SourceIt>
@@ -334,8 +239,9 @@ MGPU_LAUNCH_BOUNDS void KernelIntervalMoveIndirect(int moveCount,
 	int gather[VT], scatter[VT];
 	if(Gather) {
 		// Load the gather pointers into intervals_shared.
-		//DeviceMemToMemLoop<NT>(intervalCount, scatter_global + range.z, tid, 
-    //    intervals_shared);
+    //DeviceMemToMemLoop<NT>(intervalCount, gather_global + range.z, tid,
+    //  intervals_shared);
+    // Essentially doing: A_csrRowPtr[u_ind]
 		DeviceMemToMemLoopIndirect<NT>(intervalCount, gather_global, 
       sources_global + range.z, tid, intervals_shared);
 
