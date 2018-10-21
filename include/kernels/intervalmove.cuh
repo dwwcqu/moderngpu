@@ -43,6 +43,57 @@
 namespace mgpu {
 
 ////////////////////////////////////////////////////////////////////////////////
+// KernelIntervalExpand
+
+template<typename Tuning, typename IndicesIt, typename ValuesIt,
+	typename OutputIt>
+MGPU_LAUNCH_BOUNDS void KernelIntervalExpand(int destCount, 
+	IndicesIt indices_global, ValuesIt values_global, int sourceCount, 
+	const int* mp_global, OutputIt output_global) {
+
+	typedef MGPU_LAUNCH_PARAMS Params;
+	const int NT = Params::NT;
+	const int VT = Params::VT;
+	typedef typename std::iterator_traits<ValuesIt>::value_type T;
+
+	union Shared {
+		int indices[NT * (VT + 1)];
+		T values[NT * VT];
+	};
+	__shared__ Shared shared;
+	int tid = threadIdx.x;
+	int block = blockIdx.x;
+
+	// Compute the input and output intervals this CTA processes.
+	int4 range = CTALoadBalance<NT, VT>(destCount, indices_global, sourceCount,
+		block, tid, mp_global, shared.indices, true);
+	
+	// The interval indices are in the left part of shared memory (moveCount).
+	// The scan of interval counts are in the right part (intervalCount).
+	destCount = range.y - range.x;
+	sourceCount = range.w - range.z;
+
+	// Copy the source indices into register.
+	int sources[VT];
+	DeviceSharedToReg<NT, VT>(shared.indices, tid, sources);
+
+	// Load the source fill values into shared memory. Each value is fetched
+	// only once to reduce latency and L2 traffic.
+	DeviceMemToMemLoop<NT>(sourceCount, values_global + range.z, tid,
+		shared.values);
+	
+	// Gather the values from shared memory into register. This uses a shared
+	// memory broadcast - one instance of a value serves all the threads that
+	// comprise its fill operation.
+	T values[VT];
+	DeviceGather<NT, VT>(destCount, shared.values - range.z, sources, tid,
+		values, false);
+
+	// Store the values to global memory.
+	DeviceRegToGlobal<NT, VT>(destCount, values, tid, output_global + range.x);
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // IntervalExpand
 
 template<typename IndicesIt, typename ValuesIt, typename OutputIt>
@@ -67,33 +118,6 @@ MGPU_HOST void IntervalExpand(int moveCount, IndicesIt indices_global,
 	KernelIntervalExpand<Tuning><<<numBlocks, launch.x, 0, context.Stream()>>>(
 		moveCount, indices_global, values_global, intervalCount,
 		partitionsDevice->get(), output_global);
-	MGPU_SYNC_CHECK("KernelIntervalExpand");
-}
-
-template<typename IndicesIt, typename GatherIt, typename ValuesIt, 
-         typename OutputIt>
-MGPU_HOST void IntervalExpandIndirect(int moveCount, IndicesIt indices_global,
-  GatherIt gather_global, ValuesIt values_global, int intervalCount, 
-  OutputIt output_global, CudaContext& context) {
-
-	const int NT = 128;
-	const int VT = 7;
-	typedef LaunchBoxVT<NT, VT> Tuning;
-	int2 launch = Tuning::GetLaunchParams(context);
-
-	int NV = launch.x * launch.y;
-	int numBlocks = MGPU_DIV_UP(moveCount + intervalCount, NV);
-
-	// Partition the input and output sequences so that the load-balancing
-	// search results in a CTA fit in shared memory.
-	MGPU_MEM(int) partitionsDevice = MergePathPartitions<MgpuBoundsUpper>(
-		mgpu::counting_iterator<int>(0), moveCount, indices_global, 
-		intervalCount, NV, 0, mgpu::less<int>(), context);
-
-	KernelIntervalExpandIndirect<Tuning>
-      <<<numBlocks, launch.x, 0, context.Stream()>>>(
-		  moveCount, indices_global, gather_global, values_global, intervalCount,
-		  partitionsDevice->get(), output_global);
 	MGPU_SYNC_CHECK("KernelIntervalExpand");
 }
 
