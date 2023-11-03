@@ -336,7 +336,7 @@ namespace mgpu
     mgpu_nt.z = 1;
     mgpu_nb.x = MGPU_DIV_UP(nz, nt);
     mgpu_nb.y = 1;
-    mgpu_nb.z = (B_ncols + nb - 1) / nb;
+    mgpu_nb.z = (B_ncols + tb - 1) / tb;
 
     // Use upper-bound binary search to partition the CSR structure into tiles.
     PartitionCsrSegReducePrealloc(nz, nt, csr_global, numRows, numRows2_global,
