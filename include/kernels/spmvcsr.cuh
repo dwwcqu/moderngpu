@@ -220,8 +220,8 @@ namespace mgpu
   printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
   printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
 }*/
-#pragma unroll
       rows[32] = __shfl(rows[1], 31);
+#pragma unroll
       for (int i = MGPU_TB - 1; i >= 0; i--)
         rows[i] = __shfl(rows[0], i);
 
