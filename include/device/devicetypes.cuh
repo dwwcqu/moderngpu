@@ -53,8 +53,8 @@ namespace mgpu {
 #define MGPU_DEVICE __device__ INLINESYMBOL
 #define MGPU_HOST_DEVICE __host__ __device__ INLINESYMBOL
 
-const int WARP_SIZE = 32;
-const int LOG_WARP_SIZE = 5;
+const int WARP_SIZE = 64;
+const int LOG_WARP_SIZE = 6;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Device-side comparison operators

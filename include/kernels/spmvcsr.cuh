@@ -107,7 +107,7 @@ namespace mgpu
       }
 
       // Clear out the out-of-range inputs.
-      if (count2 < NV && (tid >> 5) >= ((count2 + 31) >> 5))
+      if (count2 < NV && (tid >> 6) >= ((count2 + 63) >> 6))
 #pragma unroll
         for (int ii = 0; ii < MGPU_TB; ii++)
           data[ii] = identity;
@@ -148,16 +148,18 @@ namespace mgpu
       int csr[NT + 1];
     };
     __shared__ Shared shared;
-    __shared__ int shared_csr2[NT >> 4]; // 2x number of warps
+    __shared__ uint64_t shared_csr2[NT >> 5]; // 2x number of warps
     __shared__ float shared_storage[2 * NT];
 
     int tid = threadIdx.x;
     int block = blockIdx.x;
     int gid = NT * block;
     int count2 = min(NT, nz - gid);
-    int lane_id = tid & (32 - 1);
-    int warp_id = tid >> 5;
-    int last_warp = nz >> 5;
+    int lane_id = tid & (64 - 1);
+    int numWarps = NT >> 6;
+    int warp_id = tid >> 6;
+    int global_warp_id = block * numWarps + warp_id;
+    int last_warp = nz >> 6;
 
     // Retrieve the left and right row limits.
     int limit0 = __ldg(limits_global + block);
@@ -185,8 +187,6 @@ namespace mgpu
     {
       columns[0] = __ldg(cols_global + gid + tid) * B_ncols;
       matrixData[0] = __ldg(matrix_global + gid + tid);
-      // if( blockIdx.x==1 && blockIdx.z==0 )
-      //   printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
     }
     else
     {
@@ -197,30 +197,22 @@ namespace mgpu
     T carryIn = 0.f;
     T carryOut;
 
-    // for( int slab=0; slab<4; slab+=MGPU_TB )
-    for (int slab = 0; slab < 32; slab += MGPU_TB)
+    for (int slab = 0; slab < 64; slab += MGPU_TB)
     {
       // Removed Indirect load case
       // This is a direct load so we don't have a data-dependency on the
       // limits.
       SpmmLoad::LoadDirectSpmm(count2, tid,
-                               matrixData, columns, vec_global + lane_id + (blockIdx.z << 5),
+                               matrixData, columns, vec_global + lane_id + (blockIdx.z << 6),
                                slab, identity, mulOp, data);
-      // if( threadIdx.x==0 && blockIdx.z==0 ) printf("%d:%d,%d,%d,%d,%d\n", blockIdx.x, shared_csr2[0], shared_csr2[1], shared_csr2[2], shared_csr2[3], shared_csr2[4]);
-      // if( (tid%32) < 16 && tid<48 && blockIdx.z==0 && blockIdx.x==0 )
-      //   printf("tid %d: %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3]);
 
       // Flatten CSR->COO and return the segmented scan terms.
       // terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr,
       //    numRows, tid, gid, range.flushLast, rows, rowStarts);
       terms = DeviceSegReducePrepareSpmm<NT, 1>(shared.csr, shared_csr2,
-                                                numRows, warp_id << 5, tid, gid, range.flushLast, rows, rowStarts);
-/*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 )
-{
-  printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
-  printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
-}*/
-      rows[32] = __shfl(rows[1], 31);
+                                                numRows, warp_id << 6, tid, gid, range.flushLast, rows, rowStarts);
+
+      rows[64] = __shfl(rows[1], 63);
 #pragma unroll
       for (int i = MGPU_TB - 1; i >= 0; i--)
         rows[i] = __shfl(rows[0], i);
@@ -229,23 +221,17 @@ namespace mgpu
       for (int i = MGPU_TB - 1; i >= 0; i--)
         rowStarts[i] = __shfl(rowStarts[0], i);
 
-      // If last warp is incomplete, cannot use 31 to shuffle
-      if (warp_id == last_warp)
-        terms.tidDelta = __shfl(terms.tidDelta, (nz & (32 - 1)) - 1);
+      // If last warp is incomplete, cannot use 63 to shuffle
+      if (global_warp_id == last_warp && (nz & (64 - 1)) != 0)
+        terms.tidDelta = __shfl(terms.tidDelta, (nz & (64 - 1)) - 1);
       else
-        terms.tidDelta = __shfl(terms.tidDelta, 31);
-
-      /*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 || warp_id==last_warp )
-      {
-        printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
-        printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
-      }*/
+        terms.tidDelta = __shfl(terms.tidDelta, 63);
 
       // Reduce tile data and store to dest_global. Write tile's carry-out
       // term to carryOut_global.
       SegReduce::ReduceToGlobalSpmm(rows, range.total, terms.tidDelta,
                                     range.begin, block, tid, lane_id, data, B_ncols,
-                                    dest_global + (blockIdx.z << 5), carryOut_global + (blockIdx.z << 5),
+                                    dest_global + (blockIdx.z << 6), carryOut_global + (blockIdx.z << 6),
                                     slab, identity, addOp, shared_storage);
     }
   }
@@ -327,7 +313,6 @@ namespace mgpu
                               DestIt carryin_global, DestIt carryout_global, const int tb, const int nt,
                               CudaContext &context)
   {
-
     int2 launch = Tuning::GetLaunchParams(context);
 
     dim3 mgpu_nt, mgpu_nb;
@@ -535,6 +520,53 @@ namespace mgpu
         break;
       }
       break;
+    case 64:
+      switch (nt)
+      {
+      case 32:
+        KernelSpmmCsr<64, 32, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      case 64:
+        KernelSpmmCsr<64, 64, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      case 128:
+        KernelSpmmCsr<64, 128, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      case 256:
+        KernelSpmmCsr<64, 256, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      case 512:
+        KernelSpmmCsr<64, 512, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      case 1024:
+        KernelSpmmCsr<64, 1024, Indirect, LoadLeft>
+            <<<mgpu_nb, mgpu_nt, 0, context.Stream()>>>(matrix_global,
+                                                        cols_global, nz, csr_global, sources_global, vec_global,
+                                                        limits_global, dest_global, carryin_global, identity,
+                                                        mulOp, addOp, B_ncols);
+        break;
+      }
+      break;
     }
     MGPU_SYNC_CHECK("KernelSpmmCsr");
 
@@ -660,6 +692,36 @@ namespace mgpu
         break;
       case 512:
         SegReduceSpinePrealloc<32, 512>(limits_global, mgpu_nb.x, dest_global,
+                                        carryin_global, carryout_global, identity, addOp, B_ncols,
+                                        context);
+        break;
+      }
+      break;
+    case 64:
+      switch (nt)
+      {
+      case 32:
+        SegReduceSpinePrealloc<64, 32>(limits_global, mgpu_nb.x, dest_global,
+                                       carryin_global, carryout_global, identity, addOp, B_ncols,
+                                       context);
+        break;
+      case 64:
+        SegReduceSpinePrealloc<64, 64>(limits_global, mgpu_nb.x, dest_global,
+                                       carryin_global, carryout_global, identity, addOp, B_ncols,
+                                       context);
+        break;
+      case 128:
+        SegReduceSpinePrealloc<64, 128>(limits_global, mgpu_nb.x, dest_global,
+                                        carryin_global, carryout_global, identity, addOp, B_ncols,
+                                        context);
+        break;
+      case 256:
+        SegReduceSpinePrealloc<64, 256>(limits_global, mgpu_nb.x, dest_global,
+                                        carryin_global, carryout_global, identity, addOp, B_ncols,
+                                        context);
+        break;
+      case 512:
+        SegReduceSpinePrealloc<64, 512>(limits_global, mgpu_nb.x, dest_global,
                                         carryin_global, carryout_global, identity, addOp, B_ncols,
                                         context);
         break;
