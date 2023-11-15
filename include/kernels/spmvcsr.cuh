@@ -102,8 +102,6 @@ namespace mgpu
         col_all[ii] = __shfl(columns[0], ii + slab);
         val_all[ii] = __shfl(matrixData[0], ii + slab);
         data[ii] = val_all[ii] * __ldg(vec_global + col_all[ii]);
-        // if( data[ii]!=0.f && blockIdx.x==1 && blockIdx.z==0 )
-        //   printf("tid %d: %f\n", tid, data[ii]);
       }
 
       // Clear out the out-of-range inputs.
@@ -111,18 +109,6 @@ namespace mgpu
 #pragma unroll
         for (int ii = 0; ii < MGPU_TB; ii++)
           data[ii] = identity;
-
-      // Transpose from strided to thread order.
-      /*if(HalfCapacity)
-        HalfSmemTranspose<NT, VT*MGPU_TB>(stridedData, tid, storage.data, data);
-      else {
-        // Cannot unroll, because using smem resource sequentially
-        for( int j=0; j<MGPU_TB; j++ )
-        {
-          DeviceRegToShared<NT2, VT>(stridedData+j*VT, tid, storage.data+NV*tiy);
-          DeviceSharedToThread<VT>(storage.data+NV*tiy, tid, data+j*VT);
-        }
-      }*/
     }
   };
 
@@ -157,6 +143,8 @@ namespace mgpu
     int count2 = min(NT, nz - gid);
     int lane_id = tid & (32 - 1);
     int warp_id = tid >> 5;
+    int numWarps = NT >> 5;
+    int global_warp_id = block * numWarps + warp_id;
     int last_warp = nz >> 5;
 
     // Retrieve the left and right row limits.
@@ -185,8 +173,6 @@ namespace mgpu
     {
       columns[0] = __ldg(cols_global + gid + tid) * B_ncols;
       matrixData[0] = __ldg(matrix_global + gid + tid);
-      // if( blockIdx.x==1 && blockIdx.z==0 )
-      //   printf("count2:%d,tid:%d,col:%d,val:%f\n", count2, tid, columns[0]>>6, matrixData[0]);
     }
     else
     {
@@ -197,7 +183,6 @@ namespace mgpu
     T carryIn = 0.f;
     T carryOut;
 
-    // for( int slab=0; slab<4; slab+=MGPU_TB )
     for (int slab = 0; slab < 32; slab += MGPU_TB)
     {
       // Removed Indirect load case
@@ -206,20 +191,12 @@ namespace mgpu
       SpmmLoad::LoadDirectSpmm(count2, tid,
                                matrixData, columns, vec_global + lane_id + (blockIdx.z << 5),
                                slab, identity, mulOp, data);
-      // if( threadIdx.x==0 && blockIdx.z==0 ) printf("%d:%d,%d,%d,%d,%d\n", blockIdx.x, shared_csr2[0], shared_csr2[1], shared_csr2[2], shared_csr2[3], shared_csr2[4]);
-      // if( (tid%32) < 16 && tid<48 && blockIdx.z==0 && blockIdx.x==0 )
-      //   printf("tid %d: %f,%f,%f,%f\n", tid, data[0], data[1], data[2], data[3]);
 
       // Flatten CSR->COO and return the segmented scan terms.
       // terms = DeviceSegReducePrepare<NT, MGPU_TB>(shared.csr,
       //    numRows, tid, gid, range.flushLast, rows, rowStarts);
       terms = DeviceSegReducePrepareSpmm<NT, 1>(shared.csr, shared_csr2,
                                                 numRows, warp_id << 5, tid, gid, range.flushLast, rows, rowStarts);
-/*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 )
-{
-  printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
-  printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
-}*/
 #pragma unroll
       rows[32] = __shfl(rows[1], 31);
       for (int i = MGPU_TB - 1; i >= 0; i--)
@@ -230,16 +207,10 @@ namespace mgpu
         rowStarts[i] = __shfl(rowStarts[0], i);
 
       // If last warp is incomplete, cannot use 31 to shuffle
-      if (warp_id == last_warp)
+      if (global_warp_id == last_warp && (nz & (32 - 1)) != 0)
         terms.tidDelta = __shfl(terms.tidDelta, (nz & (32 - 1)) - 1);
       else
         terms.tidDelta = __shfl(terms.tidDelta, 31);
-
-      /*if( (lane_id==0 || (lane_id>63 && threadIdx.x<96)) && blockIdx.z==0 && blockIdx.x==0 || warp_id==last_warp )
-      {
-        printf("tid:%d,row:%d,%d,%d,%d,%d,%d,%d,%d delta:%d\n", tid,rows[0],rows[1],rows[2],rows[3],rows[29],rows[30],rows[31],rows[32],terms.tidDelta);
-        printf("tid:%d,rowStart:%d,%d,%d,%d,%d,%d,%d,%d\n", tid,rowStarts[0],rowStarts[1],rowStarts[2],rowStarts[3],rowStarts[28],rowStarts[29],rowStarts[30],rowStarts[31]);
-      }*/
 
       // Reduce tile data and store to dest_global. Write tile's carry-out
       // term to carryOut_global.
