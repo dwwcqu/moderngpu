@@ -180,9 +180,6 @@ namespace mgpu
       matrixData[0] = 0.f;
     }
 
-    T carryIn = 0.f;
-    T carryOut;
-
     for (int slab = 0; slab < 32; slab += MGPU_TB)
     {
       // Removed Indirect load case
@@ -197,20 +194,13 @@ namespace mgpu
       //    numRows, tid, gid, range.flushLast, rows, rowStarts);
       terms = DeviceSegReducePrepareSpmm<NT, 1>(shared.csr, shared_csr2,
                                                 numRows, warp_id << 5, tid, gid, range.flushLast, rows, rowStarts);
-#pragma unroll
+      #pragma unroll
       rows[32] = __shfl(rows[1], 31);
       for (int i = MGPU_TB - 1; i >= 0; i--)
         rows[i] = __shfl(rows[0], i);
 
-#pragma unroll
-      for (int i = MGPU_TB - 1; i >= 0; i--)
-        rowStarts[i] = __shfl(rowStarts[0], i);
-
       // If last warp is incomplete, cannot use 31 to shuffle
-      if (global_warp_id == last_warp && (nz & (32 - 1)) != 0)
-        terms.tidDelta = __shfl(terms.tidDelta, (nz & (32 - 1)) - 1);
-      else
-        terms.tidDelta = __shfl(terms.tidDelta, 31);
+      terms.tidDelta = __shfl(terms.tidDelta, 31);
 
       // Reduce tile data and store to dest_global. Write tile's carry-out
       // term to carryOut_global.
