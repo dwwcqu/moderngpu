@@ -97,7 +97,8 @@ namespace mgpu
 
 		// Each thread binary searches for its starting row.
 		int row = BinarySearch<MgpuBoundsUpper>(csr_shared, numRows, offset,
-												mgpu::less<int>()) - 1;
+												mgpu::less<int>()) -
+				  1;
 
 		// Each thread starts at row and scans forward, emitting row IDs into
 		// register. Store the CTA-local row index (starts at 0) to rows and the
@@ -235,27 +236,21 @@ namespace mgpu
 			storage[tid] = carryOut;
 			__syncthreads();
 
-			// if( x!=0.f )
-			//   printf("block:%d, tid:%d, tidDelta:%d, x:%f\n", blockIdx.z, tid, tidDelta, x);
-
 			// Run an inclusive scan
-			int first = 0;
-			storage[first + tid] = x;
+			storage[tid] = x;
 			__syncthreads();
 
 #pragma unroll
-			for (int offset = 64; offset < NT; offset += offset)
+			for (int offset = 64; offset < NT; offset += 64)
 			{
 				if (tidDelta >= offset)
-					x = op(storage[first + tid - offset], x);
-				first = NT - first;
-				storage[first + tid] = x;
-				__syncthreads();
+					x = op(storage[tid - offset], x);
+				storage[NT + tid] = x;
 			}
-
+			__syncthreads();
 			// Get the exclusive scan.
-			x = (tid >= 64) ? storage[first + tid - 64] : identity;
-			carryOut = storage[first + NT - 64 + lane_id];
+			x = (tid >= 64) ? storage[NT + tid - 64] : identity;
+			carryOut = storage[NT + NT - 64 + lane_id];
 
 			__syncthreads();
 			carryIn = x;

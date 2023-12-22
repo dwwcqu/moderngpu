@@ -235,9 +235,6 @@ namespace mgpu
 		// Run a segmented scan of the carry-in values.
 		bool endFlag = row != row2;
 
-		// if( blockIdx.x<2 && carryIn2>0.f )
-		//   printf("spine1 %d %d: %d %d %f %f\n", blockIdx.z, gid, row, row2, carryIn2, dest);
-
 		T carryOut;
 		T x = carryIn2;
 
@@ -251,38 +248,30 @@ namespace mgpu
 
 		if (lane_id == 0)
 		{
-			if (!endFlag)
-				for (int i = 1; i <= warp_id; i++)
-				{
-					if (shared.segScanStorage.delta[warp_id - i])
-					{
-						tidDelta = (i - 1) << 6;
-						break;
-					}
-				}
+			for (int i = warp_id - 1; i >= 0; --i)
+			{
+				if (!shared.segScanStorage.delta[i])
+					tidDelta = (warp_id - i) << 6;
+				else
+					break;
+			}
 		}
 
 		tidDelta = __shfl(tidDelta, 0);
-
-		// if( glob_id<8 ) printf("tidDelta1 %d %d: %d\n", blockIdx.z, tid, tidDelta);
-
-		int first = 0;
-		shared.segScanStorage.values[first + tid] = x;
+		shared.segScanStorage.values[tid] = x;
 		__syncthreads();
 
 #pragma unroll
-		for (int offset = 64; offset < NT; offset += offset)
+		for (int offset = 64; offset < NT; offset += 64)
 		{
 			if (tidDelta >= offset)
-				x = op(shared.segScanStorage.values[first + tid - offset], x);
-			first = NT - first;
-			shared.segScanStorage.values[first + tid] = x;
-			__syncthreads();
+				x = op(shared.segScanStorage.values[tid - offset], x);
+			shared.segScanStorage.values[NT + tid] = x;
 		}
-
+		__syncthreads();
 		// Get the exclusive scan.
-		x = (tid >= 64) ? shared.segScanStorage.values[first + tid - 64] : identity;
-		carryOut = shared.segScanStorage.values[first + NT - 64 + lane_id];
+		x = (tid >= 64) ? shared.segScanStorage.values[NT + tid - 64] : identity;
+		carryOut = shared.segScanStorage.values[NT + NT - 64 + lane_id];
 		__syncthreads();
 
 		// Store the reduction at the end of a segment to dest_global.
@@ -429,38 +418,31 @@ namespace mgpu
 
 			if (lane_id == 0)
 			{
-				if (!endFlag)
-					for (int i = 1; i <= warp_id; i++)
-					{
-						if (shared.segScanStorage.delta[warp_id - i])
-						{
-							tidDelta = (i - 1) << 6;
-							break;
-						}
-					}
+				for (int i = warp_id - 1; i >= 0; --i)
+				{
+					if (!shared.segScanStorage.delta[i])
+						tidDelta = (warp_id - i) << 6;
+					else
+						break;
+				}
 			}
 
 			tidDelta = __shfl(tidDelta, 0);
-
-			// if( gid==16 ) printf("tidDelta2 %d %d: %d\n", blockIdx.z, tid, tidDelta);
-
-			int first = 0;
-			shared.segScanStorage.values[first + tid] = x;
+			shared.segScanStorage.values[tid] = x;
 			__syncthreads();
 
 #pragma unroll
-			for (int offset = 64; offset < NT; offset += offset)
+			for (int offset = 64; offset < NT; offset += 64)
 			{
 				if (tidDelta >= offset)
-					x = op(shared.segScanStorage.values[first + tid - offset], x);
-				first = NT - first;
-				shared.segScanStorage.values[first + tid] = x;
+					x = op(shared.segScanStorage.values[tid - offset], x);
+				shared.segScanStorage.values[NT + tid] = x;
 				__syncthreads();
 			}
 
 			// Get the exclusive scan.
-			x = (tid >= 64) ? shared.segScanStorage.values[first + tid - 64] : identity;
-			carryOut = shared.segScanStorage.values[first + NT - 64 + lane_id];
+			x = (tid >= 64) ? shared.segScanStorage.values[NT + tid - 64] : identity;
+			carryOut = shared.segScanStorage.values[NT + NT - 64 + lane_id];
 			__syncthreads();
 
 			// Add the carry-in to the reductions when we get to the end of a segment.

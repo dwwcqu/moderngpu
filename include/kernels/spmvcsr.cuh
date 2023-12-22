@@ -222,10 +222,7 @@ namespace mgpu
         rowStarts[i] = __shfl(rowStarts[0], i);
 
       // If last warp is incomplete, cannot use 63 to shuffle
-      if (global_warp_id == last_warp && (nz & (64 - 1)) != 0)
-        terms.tidDelta = __shfl(terms.tidDelta, (nz & (64 - 1)) - 1);
-      else
-        terms.tidDelta = __shfl(terms.tidDelta, 63);
+      terms.tidDelta = __shfl(terms.tidDelta, 63);
 
       // Reduce tile data and store to dest_global. Write tile's carry-out
       // term to carryOut_global.
