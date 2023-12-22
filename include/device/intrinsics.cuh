@@ -223,7 +223,7 @@ namespace mgpu
 	MGPU_HOST_DEVICE int clz(long long int x)
 	{
 #if __CUDA_ARCH__ >= 200
-		return __clz(x);
+		return __clzll(x);
 #else
 		for (int i = 63; i >= 0; --i)
 			if ((1 << i) & x)
