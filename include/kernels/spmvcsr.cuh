@@ -194,8 +194,9 @@ namespace mgpu
       //    numRows, tid, gid, range.flushLast, rows, rowStarts);
       terms = DeviceSegReducePrepareSpmm<NT, 1>(shared.csr, shared_csr2,
                                                 numRows, warp_id << 5, tid, gid, range.flushLast, rows, rowStarts);
-      #pragma unroll
+
       rows[32] = __shfl(rows[1], 31);
+      #pragma unroll
       for (int i = MGPU_TB - 1; i >= 0; i--)
         rows[i] = __shfl(rows[0], i);
 
